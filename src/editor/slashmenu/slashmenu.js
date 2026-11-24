@@ -273,8 +273,7 @@ export class SlashMenu {
       'questionnaire-inbox': questionnaireInboxFormHTML(),
       agent: this.createAgentWidgetHTML(),
       'data-source': this.createDocumentListWidgetHTML('data-source', getDocumentItemURLs('document-sources', 'dcterms:source')),
-      // Ontology namespaces are names, many of them http
-      ontology: this.createDocumentListWidgetHTML('ontology', getDocumentItemURLs('document-ontologies', 'dcterms:conformsTo'), { pattern: 'https?://.+' })
+      ontology: this.createDocumentListWidgetHTML('ontology', getDocumentItemURLs('document-ontologies', 'dcterms:conformsTo'))
     }
 
     const popup = fragmentFromString(`<form class="editor-form editor-form-active">${popupContent[button]}</form>`);
@@ -520,7 +519,8 @@ export class SlashMenu {
   }
 
   // The document's entries stay checked; unchecking one removes it on save
-  createDocumentListWidgetHTML(name, urls, { pattern = 'https://.+' } = {}) {
+  // Knowledge graphs and ontologies are read by the agent, not fetched by the browser, so local http addresses are fine
+  createDocumentListWidgetHTML(name, urls, { pattern = 'https?://.+' } = {}) {
     const entries = urls.map((url, i) => `
           <li><input checked="" id="${name}-keep-${i}" name="${name}-keep" type="checkbox" value="${htmlEncode(url, { mode: 'attribute' })}" /> <label dir="ltr" for="${name}-keep-${i}">${htmlEncode(url)}</label></li>`).join('');
 

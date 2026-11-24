@@ -171,7 +171,7 @@ function sectionHTML(kind, { search = '' } = {}) {
         ${search}
         <form class="agent-setup-url">
           <label data-i18n="dialog.agent-setup.${kind}.url.label" for="agent-setup-${kind}-url">${i18n.t(`dialog.agent-setup.${kind}.url.label.textContent`)}</label>
-          <input dir="ltr" id="agent-setup-${kind}-url" name="url" pattern="${kind === 'ontologies' ? 'https?://.+' : 'https://.+'}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" required="" type="url" value="" />
+          <input dir="ltr" id="agent-setup-${kind}-url" name="url" pattern="${kind === 'agent' ? 'https://.+' : 'https?://.+'}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" required="" type="url" value="" />
           <button data-i18n="dialog.agent-setup.add.button" type="submit">${i18n.t('dialog.agent-setup.add.button.textContent')}</button>
         </form>
       </section>`;

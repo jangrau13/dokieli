@@ -34,7 +34,8 @@ import Config from '../../src/config.js';
 import { createAgentHTML, createDataSourcesHTML, createOntologiesHTML, getDocument, getGraphData } from '../../src/doc.js';
 import { setDocumentItem } from '../../src/editor/slashmenu/handlers.js';
 import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, getDocumentItemURLs, promptToHTML, sendAgentRequest, conversationRequestURL, discoverConversation, getConversation, conversationItemHTML, showAgentPanel } from '../../src/agent.js';
-import { addItemURL, removeItemURL, getItemURLs, searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL } from '../../src/agent-setup.js';
+import { addItemURL, removeItemURL, getItemURLs, searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL, agentSetupPanelHTML } from '../../src/agent-setup.js';
+import { SlashMenu } from '../../src/editor/slashmenu/slashmenu.js';
 
 const BASE = 'https://example.org/article';
 const AGENT = 'https://agent.example/';
@@ -450,6 +451,27 @@ describe('agent setup', () => {
     removeItemURL('ontologies', ONTOLOGIES[0], view);
     expect(serialize(view).querySelector('#document-ontologies')).toBeNull();
     expect(addItemURL('ontologies', 'not a url', view)).toBe(false);
+  });
+
+  it('takes local http knowledge graphs, which only the agent reads, and keeps the agent on https', () => {
+    const LOCAL = 'http://127.0.0.1:7001/';
+    const view = viewFor('<h1>Title</h1><p>Text</p>');
+
+    addItemURL('sources', LOCAL, view);
+    addItemURL('sources', 'http://127.0.0.1:7880/query', view);
+    expect(getItemURLs('sources', view)).toEqual([LOCAL, 'http://127.0.0.1:7880/query']);
+
+    const accepts = (input, value) => new RegExp(`^(?:${input.getAttribute('pattern')})$`).test(value);
+
+    const panel = document.createElement('div');
+    panel.innerHTML = agentSetupPanelHTML();
+    expect(accepts(panel.querySelector('#agent-setup-sources-url'), LOCAL)).toBe(true);
+    expect(accepts(panel.querySelector('#agent-setup-ontologies-url'), 'http://xmlns.com/foaf/0.1/')).toBe(true);
+    expect(accepts(panel.querySelector('#agent-setup-agent-url'), 'http://agent.example/')).toBe(false);
+
+    const form = document.createElement('div');
+    form.innerHTML = SlashMenu.prototype.createDocumentListWidgetHTML.call({}, 'data-source', []);
+    expect(accepts(form.querySelector('#set-data-source'), LOCAL)).toBe(true);
   });
 
   it('finds ontologies on Linked Open Vocabularies, with consent', async () => {
