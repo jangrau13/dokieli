@@ -29,7 +29,6 @@ import { csvStringToJson } from "../../csv.js";
 import { fromCSVWTableSchema, getPrefixesUsed, ensureDocumentPrefixes } from "../../table.js";
 import { defaultThreatCaption } from "../../threatModel.js";
 import { questionHTML, questionFromFormValues, insertQuestion, setQuestionnaireInbox } from "../../ui/templates/questionnaire.js";
-import { sendAgentRequest } from "../../agent.js";
 
 export function formHandlerLanguage(e) {
   e.preventDefault();
@@ -179,11 +178,32 @@ function findDocumentItem(doc, id) {
   return found;
 }
 
+// The addresses a document-level dl links with rel, as the editor holds them
+export function getDocumentItemEntries(doc, id, rel) {
+  const item = findDocumentItem(doc, id);
+  if (!item) return [];
+
+  const urls = [];
+  item.node.descendants((node) => {
+    node.marks?.forEach((mark) => {
+      const { rel: rels, href } = mark.attrs.originalAttributes || {};
+      if (href && String(rels || '').split(/\s+/).includes(rel) && !urls.includes(href)) urls.push(href);
+    });
+  });
+  return urls;
+}
+
 // After the nearest earlier item in Config.DocumentItems, else after the h1, as insertDocumentLevelHTML places them
 function documentItemPosition(doc, id) {
   for (let i = Config.DocumentItems.indexOf(id) - 1; i >= 0; i--) {
     const previous = findDocumentItem(doc, Config.DocumentItems[i]);
     if (previous) return previous.pos + previous.node.nodeSize;
+  }
+
+  // Before a later item, so the block joins the other document details wherever they are, e.g. in a details element
+  for (let i = Config.DocumentItems.indexOf(id) + 1; i < Config.DocumentItems.length; i++) {
+    const next = findDocumentItem(doc, Config.DocumentItems[i]);
+    if (next && next.node.type.name === 'dl') return next.pos;
   }
 
   let heading = null;
@@ -294,26 +314,6 @@ export function formHandlerOntology(e) {
 
   this.hideMenu();
   this.editorView.focus();
-}
-
-export function formHandlerAgentRun(e) {
-  e.preventDefault();
-  e.stopPropagation();
-
-  const prompt = String(new FormData(e.target).get('agent-run-content') || '').trim();
-  if (!prompt) return;
-
-  // Nothing is inserted to consume the "/", so drop it
-  const { state, dispatch } = this.editorView;
-  const from = state.selection.from;
-  if (this.openedWithSlash && from > 0 && state.doc.textBetween(from - 1, from) === '/') {
-    dispatch(state.tr.delete(from - 1, from));
-  }
-
-  this.hideMenu();
-  this.editorView.focus();
-
-  sendAgentRequest({ prompt, context: this.agentContext });
 }
 
 // Pick the metadata entry for the imported CSV, falling back to the only table described.

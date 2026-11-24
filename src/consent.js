@@ -31,6 +31,7 @@ const STORAGE_KEY = 'DO.Config.OriginConsent';
 export const KNOWN_SERVICES = [
   { name: 'DOI', i18nKey: 'doi', origins: ['https://doi.org'] },
   { name: 'Internet Archive', i18nKey: 'internet-archive', origins: ['https://web.archive.org'] },
+  { name: 'Linked Open Vocabularies', i18nKey: 'lov', origins: ['https://lov.linkeddata.es'] },
   { name: 'Nanopub network', i18nKey: 'nanopub-network', origins: NANOPUB_QUERY_URLS.map(url => new URL(url).origin) },
   { name: 'Oh yeah? text analysis service', i18nKey: 'ohyeah-service', origins: [new URL(Config.OhYeah.ServiceURL).origin] },
   { name: 'Open Library', i18nKey: 'openlibrary', origins: ['https://openlibrary.org'] },

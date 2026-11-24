@@ -18,8 +18,8 @@ limitations under the License.
 import { getLanguageOptionsHTML, getLicenseOptionsHTML, getPublicationStatusOptionsHTML, getResourceTypeOptionsHTML } from "../../doc.js";
 import { getButtonHTML } from "../../ui/buttons.js";
 import { Icon } from "../../ui/icons.js";
-import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox, formHandlerAgent, formHandlerAgentRun, formHandlerDataSource, formHandlerOntology } from "./handlers.js";
-import { agentRunFormControls, getDocumentItemURLs, getEditorSelectionContext } from "../../agent.js";
+import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox, formHandlerAgent, formHandlerDataSource, formHandlerOntology } from "./handlers.js";
+import { getDocumentItemURLs, getEditorSelectionContext, showAgentPanel } from "../../agent.js";
 import { showUserIdentityInput } from "../../auth.js";
 import Config from "../../config.js";
 import { htmlEncode } from "../../utils/sanitization.js";
@@ -61,7 +61,6 @@ export class SlashMenu {
     this.formHandlerTestSuite = formHandlerTestSuite.bind(this);
     this.formHandlerQuestion = formHandlerQuestion.bind(this);
     this.formHandlerQuestionnaireInbox = formHandlerQuestionnaireInbox.bind(this);
-    this.formHandlerAgentRun = formHandlerAgentRun.bind(this);
     this.formHandlerAgent = formHandlerAgent.bind(this);
     this.formHandlerDataSource = formHandlerDataSource.bind(this);
     this.formHandlerOntology = formHandlerOntology.bind(this);
@@ -79,7 +78,6 @@ export class SlashMenu {
       'test-suite': [ { event: 'submit', callback: this.formHandlerTestSuite }, { event: 'click', callback: (e) => this.formClickHandler(e, 'test-suite') } ],
       question: [ { event: 'submit', callback: this.formHandlerQuestion }, { event: 'click', callback: (e) => this.formClickHandler(e, 'question') } ],
       'questionnaire-inbox': [ { event: 'submit', callback: this.formHandlerQuestionnaireInbox }, { event: 'click', callback: (e) => this.formClickHandler(e, 'questionnaire-inbox') } ],
-      'agent-run': [ { event: 'submit', callback: this.formHandlerAgentRun }, { event: 'click', callback: (e) => this.formClickHandler(e, 'agent-run') } ],
       agent: [ { event: 'submit', callback: this.formHandlerAgent }, { event: 'click', callback: (e) => this.formClickHandler(e, 'agent') } ],
       'data-source': [ { event: 'submit', callback: this.formHandlerDataSource }, { event: 'click', callback: (e) => this.formClickHandler(e, 'data-source') } ],
       ontology: [ { event: 'submit', callback: this.formHandlerOntology }, { event: 'click', callback: (e) => this.formClickHandler(e, 'ontology') } ],
@@ -259,10 +257,7 @@ export class SlashMenu {
 
   handlePopups(button) {
     if (button === 'toc') return this.toggleTOC();
-    if (button === 'agent-run' && !Config.User.IRI) return this.signInForAgent();
-
-    // Read before the form takes the focus
-    if (button === 'agent-run') this.agentContext = getEditorSelectionContext(this.editorView);
+    if (button === 'agent-run') return this.openAgentPanel();
 
     let popupContent = {
       img: this.createImgWidgetHTML(),
@@ -276,7 +271,6 @@ export class SlashMenu {
       'test-suite': this.createTestSuiteWidgetHTML(),
       question: questionFormHTML(),
       'questionnaire-inbox': questionnaireInboxFormHTML(),
-      'agent-run': agentRunFormControls(),
       agent: this.createAgentWidgetHTML(),
       'data-source': this.createDocumentListWidgetHTML('data-source', getDocumentItemURLs('document-sources', 'dcterms:source')),
       // Ontology namespaces are names, many of them http
@@ -287,8 +281,11 @@ export class SlashMenu {
     this.openPopup(popup, button);
   }
 
-  // Agent requests are made by a signed-in author
-  signInForAgent() {
+  // The conversation with the agent is a panel of its own, made by a signed-in author
+  openAgentPanel() {
+    // Where the author is, read before the "/" goes
+    const context = getEditorSelectionContext(this.editorView);
+
     const { state, dispatch } = this.editorView;
     const from = state.selection.from;
     if (this.openedWithSlash && from > 0 && state.doc.textBetween(from - 1, from) === '/') {
@@ -296,7 +293,13 @@ export class SlashMenu {
     }
 
     this.hideMenu();
-    showUserIdentityInput();
+
+    if (!Config.User.IRI) {
+      showUserIdentityInput();
+      return;
+    }
+
+    showAgentPanel({ context });
   }
 
   // The menu item is the toggle; with no sections yet the heading still shows.

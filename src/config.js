@@ -94,7 +94,9 @@ export default {
   },
   // Requests to the document's agent are ActivityStreams JSON-LD
   Agent: {
-    ContentType: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
+    ContentType: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+    // The last turns the agent panel shows
+    ConversationLimit: 20
   },
   MathAvailable: (typeof MathJax !== 'undefined'),
   EditorEnabled: false,

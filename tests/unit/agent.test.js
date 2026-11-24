@@ -33,7 +33,8 @@ import { schema } from '../../src/editor/schema/base.js';
 import Config from '../../src/config.js';
 import { createAgentHTML, createDataSourcesHTML, createOntologiesHTML, getDocument, getGraphData } from '../../src/doc.js';
 import { setDocumentItem } from '../../src/editor/slashmenu/handlers.js';
-import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, getDocumentItemURLs, promptToHTML, sendAgentRequest } from '../../src/agent.js';
+import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, getDocumentItemURLs, promptToHTML, sendAgentRequest, conversationRequestURL, discoverConversation, getConversation, conversationItemHTML, showAgentPanel } from '../../src/agent.js';
+import { addItemURL, removeItemURL, getItemURLs, searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL } from '../../src/agent-setup.js';
 
 const BASE = 'https://example.org/article';
 const AGENT = 'https://agent.example/';
@@ -293,7 +294,6 @@ describe('sending to the agent', () => {
     expect(inbox).toBe('https://agent.example/inbox/');
     expect(options.contentType).toBe('application/ld+json; profile="https://www.w3.org/ns/activitystreams"');
     expect(body).toMatchObject({ type: 'Create', actor: 'https://alice.example/#me', object: { type: 'Note', content: '<p>Add a summary</p>' }, target: BASE });
-    expect(document.querySelector('#document-action-message button.agent-check-updates')).not.toBeNull();
   });
 
   it('sends nothing when the document has no agent', async () => {
@@ -326,5 +326,170 @@ describe('sending to the agent', () => {
 
     expect(discoverInbox).not.toHaveBeenCalled();
     expect(postNotification).not.toHaveBeenCalled();
+  });
+});
+
+function jsonResponse(body, { status = 200, headers = {} } = {}) {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/ld+json', ...headers } });
+}
+
+const CONVERSATION = 'https://agent.example/agent/conversations/article/';
+const ME = 'https://alice.example/#me';
+
+const collection = {
+  '@context': 'https://www.w3.org/ns/activitystreams',
+  'id': CONVERSATION,
+  'type': 'OrderedCollection',
+  'orderedItems': [
+    { 'type': 'Note', 'attributedTo': ME, 'content': '<p>Add a summary</p>', 'published': '2026-11-24T10:00:00Z', 'context': { 'type': 'SpecificResource', 'source': BASE, 'selector': [{ 'type': 'TextQuoteSelector', 'exact': 'brave' }] } },
+    { 'type': 'Note', 'actor': AGENT, 'content': '<p>Done.</p><script>alert(1)</script><img src="x" onerror="alert(2)">', 'published': '2026-11-24T10:01:00Z' }
+  ]
+};
+
+describe('the conversation with the agent', () => {
+  beforeEach(() => {
+    Config.User.IRI = ME;
+  });
+
+  it('asks the agent resource about the document', () => {
+    expect(conversationRequestURL('https://agent.example/agent#me', BASE)).toBe(`https://agent.example/agent?document=${encodeURIComponent(BASE)}`);
+  });
+
+  it('is found from the Link header', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 200, headers: { 'Link': `<${CONVERSATION}>; rel="https://www.w3.org/ns/activitystreams#replies"` } }));
+
+    expect(await discoverConversation(AGENT, BASE, { fetch })).toBe(CONVERSATION);
+    expect(fetch.mock.calls[0][0]).toBe(conversationRequestURL(AGENT, BASE));
+  });
+
+  it('is found from as:replies in the body when there is no Link header', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ '@context': 'https://www.w3.org/ns/activitystreams', 'id': AGENT, 'replies': { 'id': CONVERSATION } }));
+
+    expect(await discoverConversation(AGENT, BASE, { fetch })).toBe(CONVERSATION);
+  });
+
+  it('reads the last turns, newest last, from actor or attributedTo', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(collection));
+
+    const items = await getConversation(CONVERSATION, { fetch, limit: 20 });
+
+    expect(items.map(item => item.actor)).toEqual([ME, AGENT]);
+    expect(items[0].context.selector[0].exact).toBe('brave');
+    expect((await getConversation(CONVERSATION, { fetch: vi.fn().mockResolvedValue(jsonResponse(collection)), limit: 1 })).map(item => item.actor)).toEqual([AGENT]);
+  });
+
+  it('shows who said what, when, and about which part, without scripts', () => {
+    const container = document.createElement('ul');
+    container.innerHTML = collection.orderedItems.map(note => conversationItemHTML({ actor: note.attributedTo || note.actor, content: note.content, published: note.published, context: note.context || null }, { agent: AGENT })).join('');
+
+    const [mine, agents] = container.querySelectorAll('li');
+    expect(mine.classList.contains('agent-conversation-user')).toBe(true);
+    expect(mine.querySelector('time').getAttribute('datetime')).toBe('2026-11-24T10:00:00Z');
+    expect(mine.querySelector('q').textContent).toBe('brave');
+    expect(agents.classList.contains('agent-conversation-agent')).toBe(true);
+    expect(agents.querySelector('div').textContent).toContain('Done.');
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.querySelector('img').hasAttribute('onerror')).toBe(false);
+  });
+
+  it('loads nothing before the panel opens, and the conversation when it does', async () => {
+    Config.DocumentURL = BASE;
+    Config.Editor = { mode: 'author' };
+    requestOriginConsent.mockResolvedValue(true);
+    mount(createAgentHTML(AGENT));
+
+    const fetch = vi.fn(async (url) => url === CONVERSATION
+      ? jsonResponse(collection)
+      : new Response('', { status: 200, headers: { 'Link': `<${CONVERSATION}>; rel="https://www.w3.org/ns/activitystreams#replies"` } }));
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(document.getElementById('agent-panel')).toBeNull();
+
+    const panel = await showAgentPanel({ fetch });
+
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([conversationRequestURL(AGENT, BASE), CONVERSATION]);
+    expect(panel.querySelectorAll('.agent-conversation li')).toHaveLength(2);
+    expect(panel.querySelector('textarea[name="agent-run-content"]')).not.toBeNull();
+    expect(panel.classList.contains('do')).toBe(true);
+  });
+});
+
+describe('agent setup', () => {
+  function viewFor(html) {
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    let state = EditorState.create({ doc: PMDOMParser.fromSchema(schema).parse(container) });
+    return { get state() { return state; }, dispatch(tr) { state = state.apply(tr); } };
+  }
+
+  function serialize(view) {
+    const out = document.createElement('div');
+    out.appendChild(DOMSerializer.fromSchema(schema).serializeFragment(view.state.doc.content));
+    return out;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestOriginConsent.mockResolvedValue(true);
+  });
+
+  it('adds and removes knowledge graphs and ontologies in their blocks', async () => {
+    const view = viewFor('<h1>Title</h1><p>Text</p>');
+
+    addItemURL('sources', SOURCES[0], view);
+    addItemURL('sources', SOURCES[1], view);
+    addItemURL('ontologies', ONTOLOGIES[0], view);
+    addItemURL('agent', AGENT, view);
+
+    expect(getItemURLs('sources', view)).toEqual(SOURCES);
+    await expectSetup(serialize(view).innerHTML);
+
+    removeItemURL('sources', SOURCES[0], view);
+    expect(getItemURLs('sources', view)).toEqual([SOURCES[1]]);
+
+    removeItemURL('ontologies', ONTOLOGIES[0], view);
+    expect(serialize(view).querySelector('#document-ontologies')).toBeNull();
+    expect(addItemURL('ontologies', 'not a url', view)).toBe(false);
+  });
+
+  it('finds ontologies on Linked Open Vocabularies, with consent', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({
+      results: [{ uri: ['http://www.w3.org/ns/prov#'], prefix: ['prov'], 'http://purl.org/dc/terms/title@en': ['W3C PROVenance Interchange'], score: 8.6 }]
+    }));
+
+    const results = await searchOntologies('prov', { fetch });
+
+    expect(requestOriginConsent.mock.calls[0][0]).toBe(`${LOV_AUTOCOMPLETE_URL}?q=prov`);
+    expect(fetch.mock.calls[0][0]).toBe(`${LOV_AUTOCOMPLETE_URL}?q=prov`);
+    expect(results).toEqual([{ uri: 'http://www.w3.org/ns/prov#', prefix: 'prov', title: 'W3C PROVenance Interchange' }]);
+  });
+
+  it('searches nothing without consent', async () => {
+    requestOriginConsent.mockResolvedValue(false);
+    const fetch = vi.fn();
+
+    expect(await searchOntologies('prov', { fetch })).toEqual([]);
+    expect(await searchKnowledgeGraphs(AGENT, 'cities', { fetch })).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('finds knowledge graphs in the agent catalog', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({
+      '@context': { '@vocab': 'http://schema.org/' },
+      '@graph': [
+        { 'name': 'Urban', 'description': 'City data', 'sparqlEndpoint': 'https://kg.example/sparql', 'kind': 'sparql' },
+        { 'name': 'Places', 'url': 'https://kg.example/places.ttl', 'kind': 'rdf' }
+      ]
+    }));
+
+    const results = await searchKnowledgeGraphs('https://agent.example/agent', 'cities', { fetch });
+
+    expect(requestOriginConsent).toHaveBeenCalledWith('https://agent.example/agent', { reason: 'agent', ask: true });
+    expect(fetch.mock.calls[0][0]).toBe(catalogSearchURL('https://agent.example/agent', 'cities'));
+    expect(fetch.mock.calls[0][0]).toBe('https://agent.example/agent/knowledge-graphs?q=cities');
+    expect(results).toEqual([
+      { name: 'Urban', description: 'City data', url: 'https://kg.example/sparql', kind: 'sparql' },
+      { name: 'Places', description: '', url: 'https://kg.example/places.ttl', kind: 'rdf' }
+    ]);
   });
 });

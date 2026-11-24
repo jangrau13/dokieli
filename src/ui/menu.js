@@ -88,6 +88,7 @@ export function renderDocumentTools() {
     Config.Button.Menu.DocumentInfo,
     Config.Button.Menu.OhYeah,
     Config.Button.Menu.EmbedData,
+    Config.Button.Menu.AgentSetup,
     Config.Button.Menu.Source,
     Config.Button.Menu.Export,
     Config.Button.Menu.Print

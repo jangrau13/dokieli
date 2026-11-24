@@ -51,6 +51,7 @@ import { initSpecification } from './ui/templates/specification.js';
 import { initQuestionnaire } from './ui/templates/questionnaire.js';
 import * as Slideshow from './ui/templates/slideshow.js';
 import { lazyImport } from './utils/lazy.js';
+import { showAgentSetup } from './agent-setup.js';
 import { csvStringToJson, jsonToHtmlTableString } from './csv.js';
 import { restoreYjsContent, addYjsVersion, getYjsVersions, getYjsVersionsFromIDB, getCurrentVersionKey, onYjsVersionsChanged } from "./editor/editor.js";
 import { rewriteBlobImagesToRelative, uploadBlobAssets, clearBlobAssets, hasUploadTarget, resolveAuthenticatedImages } from "./editor/utils/imageAssets.js";
@@ -659,6 +660,11 @@ export function initDocumentDoEvents() {
 
     if (e.target.closest('.embed-data-meta')) {
       showEmbedData(e);
+    }
+
+    if (e.target.closest('.agent-setup')) {
+      hideDocumentMenu(e);
+      showAgentSetup();
     }
 
     if (e.target.closest('.resource-save')){
