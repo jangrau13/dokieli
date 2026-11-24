@@ -15,11 +15,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { createLanguageHTML, createLicenseHTML, createInboxHTML, createInReplyToHTML, createPublicationStatusHTML, createResourceTypeHTML, createTestSuiteHTML } from "../../doc.js";
+import { createLanguageHTML, createLicenseHTML, createInboxHTML, createInReplyToHTML, createPublicationStatusHTML, createResourceTypeHTML, createTestSuiteHTML, createAgentHTML, createDataSourcesHTML, createOntologiesHTML } from "../../doc.js";
 import { fragmentFromString } from "../../utils/html.js";
 import { getFormValues } from "../../utils/html.js";
 import { schema } from "../schema/base.js";
 import { TextSelection } from "prosemirror-state";
+import { DOMParser as PMDOMParser } from "prosemirror-model";
 import Config from "../../config.js";
 import { isUploadableTarget, uploadImageFile } from "../utils/imageAssets.js";
 import { insertTable } from "../commands/table.js";
@@ -28,6 +29,7 @@ import { csvStringToJson } from "../../csv.js";
 import { fromCSVWTableSchema, getPrefixesUsed, ensureDocumentPrefixes } from "../../table.js";
 import { defaultThreatCaption } from "../../threatModel.js";
 import { questionHTML, questionFromFormValues, insertQuestion, setQuestionnaireInbox } from "../../ui/templates/questionnaire.js";
+import { sendAgentRequest } from "../../agent.js";
 
 export function formHandlerLanguage(e) {
   e.preventDefault();
@@ -163,6 +165,155 @@ export function formHandlerQuestionnaireInbox(e) {
   setQuestionnaireInbox(this.editorView, inbox, { openedWithSlash: this.openedWithSlash });
   this.hideMenu();
   this.editorView.focus();
+}
+
+function findDocumentItem(doc, id) {
+  let found = null;
+  doc.descendants((node, pos) => {
+    if (found) return false;
+    if (node.attrs?.originalAttributes?.id === id) {
+      found = { node, pos };
+      return false;
+    }
+  });
+  return found;
+}
+
+// After the nearest earlier item in Config.DocumentItems, else after the h1, as insertDocumentLevelHTML places them
+function documentItemPosition(doc, id) {
+  for (let i = Config.DocumentItems.indexOf(id) - 1; i >= 0; i--) {
+    const previous = findDocumentItem(doc, Config.DocumentItems[i]);
+    if (previous) return previous.pos + previous.node.nodeSize;
+  }
+
+  let heading = null;
+  doc.descendants((node, pos) => {
+    if (heading) return false;
+    if (node.type.name === 'heading' && node.attrs.level === 1) {
+      heading = { node, pos };
+      return false;
+    }
+  });
+
+  return heading ? heading.pos + heading.node.nodeSize : 0;
+}
+
+// Writes a document-level dl (e.g. #document-agent) in place of the one there, or removes it when html is empty
+export function setDocumentItem(view, id, html, { openedWithSlash = false } = {}) {
+  const { schema } = view.state;
+  const tr = view.state.tr;
+
+  // The "/" and the line it leaves behind, when nothing else is on it
+  if (openedWithSlash) {
+    const from = tr.selection.from;
+    if (from > 0 && tr.doc.textBetween(from - 1, from) === '/') {
+      tr.delete(from - 1, from);
+    }
+  }
+  const { $from } = tr.selection;
+  const line = $from.parent;
+  const emptyLine = (openedWithSlash && line.isTextblock && !line.content.size && $from.depth >= 1 && $from.node(-1).childCount > 1)
+    ? { from: $from.before(), to: $from.after() }
+    : null;
+
+  const nodes = html ? PMDOMParser.fromSchema(schema).parseSlice(fragmentFromString(html)).content : null;
+  const existing = findDocumentItem(tr.doc, id);
+
+  if (existing) {
+    if (nodes) {
+      tr.replaceWith(existing.pos, existing.pos + existing.node.nodeSize, nodes);
+    }
+    else {
+      tr.delete(existing.pos, existing.pos + existing.node.nodeSize);
+    }
+  }
+  else if (nodes) {
+    tr.insert(documentItemPosition(tr.doc, id), nodes);
+  }
+
+  if (emptyLine) {
+    tr.delete(tr.mapping.map(emptyLine.from), tr.mapping.map(emptyLine.to));
+  }
+
+  view.dispatch(tr.scrollIntoView());
+}
+
+// Absolute, so the address holds wherever the document is stored or copied
+function absoluteURL(value) {
+  try {
+    return new URL(String(value || '').trim()).href;
+  }
+  catch {
+    return '';
+  }
+}
+
+export function formHandlerAgent(e) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const agent = absoluteURL(new FormData(e.target).get('agent'));
+
+  // An empty address takes the agent off the document
+  setDocumentItem(this.editorView, 'document-agent', createAgentHTML(agent), { openedWithSlash: this.openedWithSlash });
+  if (agent) ensureDocumentPrefixes(['schema']);
+
+  this.hideMenu();
+  this.editorView.focus();
+}
+
+// The checked entries stay, the new address is added
+function listedURLs(form, name) {
+  const formData = new FormData(form);
+  const kept = formData.getAll(`${name}-keep`).map(absoluteURL).filter(Boolean);
+  const added = absoluteURL(formData.get(name));
+  return added ? [...kept, added] : kept;
+}
+
+export function formHandlerDataSource(e) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const urls = listedURLs(e.target, 'data-source');
+
+  setDocumentItem(this.editorView, 'document-sources', createDataSourcesHTML(urls), { openedWithSlash: this.openedWithSlash });
+  if (urls.length) ensureDocumentPrefixes(['dcterms']);
+
+  this.hideMenu();
+  this.editorView.focus();
+}
+
+export function formHandlerOntology(e) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const urls = listedURLs(e.target, 'ontology');
+
+  setDocumentItem(this.editorView, 'document-ontologies', createOntologiesHTML(urls), { openedWithSlash: this.openedWithSlash });
+  if (urls.length) ensureDocumentPrefixes(['dcterms']);
+
+  this.hideMenu();
+  this.editorView.focus();
+}
+
+export function formHandlerAgentRun(e) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const prompt = String(new FormData(e.target).get('agent-run-content') || '').trim();
+  if (!prompt) return;
+
+  // Nothing is inserted to consume the "/", so drop it
+  const { state, dispatch } = this.editorView;
+  const from = state.selection.from;
+  if (this.openedWithSlash && from > 0 && state.doc.textBetween(from - 1, from) === '/') {
+    dispatch(state.tr.delete(from - 1, from));
+  }
+
+  this.hideMenu();
+  this.editorView.focus();
+
+  sendAgentRequest({ prompt, context: this.agentContext });
 }
 
 // Pick the metadata entry for the imported CSV, falling back to the only table described.

@@ -1834,6 +1834,21 @@ export function getGraphRights(s) {
   return d[0];
 }
 
+// The agent that acts on the document on request (schema:agent)
+export function getGraphAgent(s) {
+  return sanitizeIRIs(s.out(ns.schema.agent).values)[0];
+}
+
+// Data the document draws on (dcterms:source)
+export function getGraphSources(s) {
+  return sanitizeIRIs(s.out(ns.dcterms.source).values);
+}
+
+// Ontologies the document's data conforms to (dcterms:conformsTo)
+export function getGraphOntologies(s) {
+  return sanitizeIRIs(s.out(ns.dcterms.conformsTo).values);
+}
+
 export function getGraphLabel(s) {
   var d = s.out(ns.schema.name).values[0] || s.out(ns.dcterms.title).values[0] || s.out(ns.dcelements.title).values[0] || getAgentName(s) || s.out(ns.as.summary).values[0] || undefined;
   return d === undefined ? undefined : domSanitize(d)

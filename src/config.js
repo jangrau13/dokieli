@@ -92,6 +92,10 @@ export default {
   OhYeah: {
     ServiceURL: process.env.OHYEAH_SERVICE_URL || 'https://ohyeah.dokie.li/'
   },
+  // Requests to the document's agent are ActivityStreams JSON-LD
+  Agent: {
+    ContentType: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"'
+  },
   MathAvailable: (typeof MathJax !== 'undefined'),
   EditorEnabled: false,
   EditorWasEnabled: false,
@@ -160,6 +164,7 @@ export default {
     "audio": "🔊",
     "code": "#",
     "dl": "☝",
+    "dl#document-agent": "🤖",
     "dl#document-annotation-service": "※",
     "dl#document-cited-by": "※",
     "dl#document-created": "📅",
@@ -171,12 +176,14 @@ export default {
     "dl#document-license": "🌻",
     "dl#document-memento": "⛰",
     "dl#document-modified": "📅",
+    "dl#document-ontologies": "🧩",
     "dl#document-original": "♁",
     "dl#document-predecessor-version": "≺",
     "dl#document-published": "📅",
     "dl#document-rights": "📜",
     "dl#document-resource-state": "🙊",
     "dl#document-see-also": "🙈",
+    "dl#document-sources": "🗃",
     "dl#document-status": "🎆",
     "dl#document-timemap": "⌚",
     "dl#document-type": "🌱",
@@ -267,6 +274,9 @@ export default {
     'document-inbox',
     'document-annotation-service',
     'document-in-reply-to',
+    'document-agent',
+    'document-sources',
+    'document-ontologies',
     'document-type',
     'document-resource-state',
     'document-status',

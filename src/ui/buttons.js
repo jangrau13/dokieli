@@ -302,6 +302,18 @@ export const buttonIcons = {
   ohyeah: {
     icon: Icon['.fas.fa-scale']
   },
+  agent: {
+    icon: Icon['.fas.fa-magic']
+  },
+  'agent-run': {
+    icon: Icon['.fas.fa-magic']
+  },
+  'data-source': {
+    icon: Icon['.fas.fa-database']
+  },
+  ontology: {
+    icon: Icon['.fas.fa-circle-nodes']
+  },
   graph: {
     icon: Icon['.fas.fa-circle-nodes']
   },

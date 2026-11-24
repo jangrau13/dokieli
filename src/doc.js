@@ -23,7 +23,7 @@ import Config from './config.js'
 import { getDateTimeISO, generateAttributeId, uniqueArray, getRandomIndex, getHash, isValidISBN, getDateTimeISOFromMDY, debounce, sortToLower } from './util.js'
 import { parseWacAllow } from '@dokieli/web-access-control';
 import { getAbsoluteIRI, getBaseURL, stripFragmentFromString, getFragmentFromString, getURLLastPath, getPrefixedNameFromIRI, generateDataURI, getProxyableIRI, getFragmentOrLastPath, currentLocation, getParentURLPath } from './uri.js'
-import { getResourceGraph, sortGraphTriples, getGraphContributors, getGraphAuthors, getGraphEditors, getGraphPerformers, getGraphPublishers, getGraphLabel, getGraphEmail, getGraphTitle, getGraphConceptLabel, getGraphPublished, getGraphUpdated, getGraphDescription, getGraphLicense, getGraphRights, getGraphFromData, getGraphAudience, getGraphTypes, getGraphLanguage, getGraphInbox, getUserLabelOrIRI, getGraphImage, getGraphDate, processResources, getAgentName, getGraphCreators } from './graph.js';
+import { getResourceGraph, sortGraphTriples, getGraphContributors, getGraphAuthors, getGraphEditors, getGraphPerformers, getGraphPublishers, getGraphLabel, getGraphEmail, getGraphTitle, getGraphConceptLabel, getGraphPublished, getGraphUpdated, getGraphDescription, getGraphLicense, getGraphRights, getGraphFromData, getGraphAudience, getGraphTypes, getGraphLanguage, getGraphInbox, getUserLabelOrIRI, getGraphImage, getGraphDate, processResources, getAgentName, getGraphCreators, getGraphAgent, getGraphSources, getGraphOntologies } from './graph.js';
 import { Icon } from './ui/icons.js';
 import { buttonIcons, getButtonHTML, updateButtons } from './ui/buttons.js'
 import { domSanitizeHTMLBody, domSanitize, sanitizeInsertAdjacentHTML, htmlEncode, sanitizeIRI } from './utils/sanitization.js';
@@ -1477,6 +1477,10 @@ export function getGraphData(s, options) {
   info['inbox'] = getGraphInbox(s);
   info['annotationService'] = s.out(ns.oa.annotationService).values;
 
+  info['agent'] = getGraphAgent(s);
+  info['sources'] = getGraphSources(s);
+  info['ontologies'] = getGraphOntologies(s);
+
   //TODO: Refactor
   //FIXME: permissionsActions, specrequirement, skosConceptSchemes are assumed to be from document's policies
 
@@ -2896,6 +2900,41 @@ export function createTestSuiteHTML(url, options = {}) {
   options['title'] = 'Test Suite';
 
   return createDefinitionListHTML([{ 'href': url, 'rel': 'spec:testSuite' }], options);
+}
+
+// The document's agent; one per document
+export function createAgentHTML(url, options = {}) {
+  if (!url) return '';
+
+  options['id'] = options.id || 'document-agent';
+  options['class'] = options.class || 'agent';
+  options['title'] = i18n.tDoc('document-agent.dt.textContent');
+
+  return createDefinitionListHTML([{ 'href': url, 'rel': 'schema:agent' }], options);
+}
+
+// The data the document draws on
+export function createDataSourcesHTML(urls, options = {}) {
+  urls = uniqueArray((urls || []).filter(Boolean));
+  if (!urls.length) return '';
+
+  options['id'] = options.id || 'document-sources';
+  options['class'] = options.class || 'sources';
+  options['title'] = i18n.tDoc('document-sources.dt.textContent');
+
+  return createDefinitionListHTML(urls.map(href => ({ href, 'rel': 'dcterms:source' })), options);
+}
+
+// The ontologies the document's data conforms to
+export function createOntologiesHTML(urls, options = {}) {
+  urls = uniqueArray((urls || []).filter(Boolean));
+  if (!urls.length) return '';
+
+  options['id'] = options.id || 'document-ontologies';
+  options['class'] = options.class || 'ontologies';
+  options['title'] = i18n.tDoc('document-ontologies.dt.textContent');
+
+  return createDefinitionListHTML(urls.map(href => ({ href, 'rel': 'dcterms:conformsTo' })), options);
 }
 
 // Show the linked container or inbox URL next to its label.

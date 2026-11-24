@@ -18,7 +18,11 @@ limitations under the License.
 import { getLanguageOptionsHTML, getLicenseOptionsHTML, getPublicationStatusOptionsHTML, getResourceTypeOptionsHTML } from "../../doc.js";
 import { getButtonHTML } from "../../ui/buttons.js";
 import { Icon } from "../../ui/icons.js";
-import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox } from "./handlers.js";
+import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox, formHandlerAgent, formHandlerAgentRun, formHandlerDataSource, formHandlerOntology } from "./handlers.js";
+import { agentRunFormControls, getDocumentItemURLs, getEditorSelectionContext } from "../../agent.js";
+import { showUserIdentityInput } from "../../auth.js";
+import Config from "../../config.js";
+import { htmlEncode } from "../../utils/sanitization.js";
 import { listLookupServices } from "../../services.js";
 import { TextSelection } from "prosemirror-state";
 import { DOMParser } from "prosemirror-model";
@@ -39,7 +43,7 @@ export class SlashMenu {
     this.menuContainer.style.display = "none";
     this.menuContainer.style.position = "absolute";
 
-    this.slashMenuButtons = ['img', 'table', 'toc', 'language', 'license', 'inbox', 'in-reply-to', 'publication-status', 'resource-type', 'test-suite', 'question', 'questionnaire-inbox'].map(button => ({
+    this.slashMenuButtons = ['img', 'table', 'toc', 'language', 'license', 'inbox', 'in-reply-to', 'publication-status', 'resource-type', 'test-suite', 'question', 'questionnaire-inbox', 'agent-run', 'agent', 'data-source', 'ontology'].map(button => ({
       button,
       dom: () => fragmentFromString(getButtonHTML({ button } )).firstChild,
     }));
@@ -57,6 +61,10 @@ export class SlashMenu {
     this.formHandlerTestSuite = formHandlerTestSuite.bind(this);
     this.formHandlerQuestion = formHandlerQuestion.bind(this);
     this.formHandlerQuestionnaireInbox = formHandlerQuestionnaireInbox.bind(this);
+    this.formHandlerAgentRun = formHandlerAgentRun.bind(this);
+    this.formHandlerAgent = formHandlerAgent.bind(this);
+    this.formHandlerDataSource = formHandlerDataSource.bind(this);
+    this.formHandlerOntology = formHandlerOntology.bind(this);
 
     //TODO: Create formValidationHandlers to handle `input` and `invalid` event handlers. Move oninput/oninvalid out of form's inline HTML
     this.formEventListeners = {
@@ -71,6 +79,10 @@ export class SlashMenu {
       'test-suite': [ { event: 'submit', callback: this.formHandlerTestSuite }, { event: 'click', callback: (e) => this.formClickHandler(e, 'test-suite') } ],
       question: [ { event: 'submit', callback: this.formHandlerQuestion }, { event: 'click', callback: (e) => this.formClickHandler(e, 'question') } ],
       'questionnaire-inbox': [ { event: 'submit', callback: this.formHandlerQuestionnaireInbox }, { event: 'click', callback: (e) => this.formClickHandler(e, 'questionnaire-inbox') } ],
+      'agent-run': [ { event: 'submit', callback: this.formHandlerAgentRun }, { event: 'click', callback: (e) => this.formClickHandler(e, 'agent-run') } ],
+      agent: [ { event: 'submit', callback: this.formHandlerAgent }, { event: 'click', callback: (e) => this.formClickHandler(e, 'agent') } ],
+      'data-source': [ { event: 'submit', callback: this.formHandlerDataSource }, { event: 'click', callback: (e) => this.formClickHandler(e, 'data-source') } ],
+      ontology: [ { event: 'submit', callback: this.formHandlerOntology }, { event: 'click', callback: (e) => this.formClickHandler(e, 'ontology') } ],
     }
 
     document.getElementById('document-slashmenu')?.remove();
@@ -247,6 +259,10 @@ export class SlashMenu {
 
   handlePopups(button) {
     if (button === 'toc') return this.toggleTOC();
+    if (button === 'agent-run' && !Config.User.IRI) return this.signInForAgent();
+
+    // Read before the form takes the focus
+    if (button === 'agent-run') this.agentContext = getEditorSelectionContext(this.editorView);
 
     let popupContent = {
       img: this.createImgWidgetHTML(),
@@ -259,11 +275,28 @@ export class SlashMenu {
       'resource-type': this.createResourceTypeWidgetHTML(),
       'test-suite': this.createTestSuiteWidgetHTML(),
       question: questionFormHTML(),
-      'questionnaire-inbox': questionnaireInboxFormHTML()
+      'questionnaire-inbox': questionnaireInboxFormHTML(),
+      'agent-run': agentRunFormControls(),
+      agent: this.createAgentWidgetHTML(),
+      'data-source': this.createDocumentListWidgetHTML('data-source', getDocumentItemURLs('document-sources', 'dcterms:source')),
+      // Ontology namespaces are names, many of them http
+      ontology: this.createDocumentListWidgetHTML('ontology', getDocumentItemURLs('document-ontologies', 'dcterms:conformsTo'), { pattern: 'https?://.+' })
     }
 
     const popup = fragmentFromString(`<form class="editor-form editor-form-active">${popupContent[button]}</form>`);
     this.openPopup(popup, button);
+  }
+
+  // Agent requests are made by a signed-in author
+  signInForAgent() {
+    const { state, dispatch } = this.editorView;
+    const from = state.selection.from;
+    if (this.openedWithSlash && from > 0 && state.doc.textBetween(from - 1, from) === '/') {
+      dispatch(state.tr.delete(from - 1, from));
+    }
+
+    this.hideMenu();
+    showUserIdentityInput();
   }
 
   // The menu item is the toggle; with no sections yet the heading still shows.
@@ -455,6 +488,46 @@ export class SlashMenu {
       <fieldset>
         <legend data-i18n="editor.toolbar.test-suite.form.legend">${i18n.t('editor.toolbar.test-suite.form.legend.textContent')}</legend>
         <label data-i18n="editor.toolbar.test-suite.form.set-test-suite.label" for="set-test-suite">${i18n.t('editor.toolbar.test-suite.form.set-test-suite.label.textContent')}</label> <input class="editor-form-input" data-i18n="editor.toolbar.form.url.input" dir="ltr" id="set-test-suite" name="test-suite" placeholder="https://example.net/test-suite" pattern="https?://.+" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" required="" type="url" value="" />
+        <div>
+          <button class="editor-form-submit" data-i18n="editor.toolbar.form.save.button" type="submit">${i18n.t('editor.toolbar.form.save.button.textContent')}</button>
+          <button class="editor-form-cancel" data-i18n="editor.toolbar.form.cancel.button" type="button">${i18n.t('editor.toolbar.form.cancel.button.textContent')}</button>
+        </div>
+      </fieldset>
+    `;
+
+    return html;
+  }
+
+  createAgentWidgetHTML() {
+    const agent = getDocumentItemURLs('document-agent', 'schema:agent')[0] || '';
+
+    var html = `
+      <fieldset>
+        <legend data-i18n="editor.toolbar.agent.form.legend">${i18n.t('editor.toolbar.agent.form.legend.textContent')}</legend>
+        <label data-i18n="editor.toolbar.agent.form.set-agent.label" for="set-agent">${i18n.t('editor.toolbar.agent.form.set-agent.label.textContent')}</label> <input class="editor-form-input" data-i18n="editor.toolbar.form.url.input" dir="ltr" id="set-agent" name="agent" pattern="https://.+" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" type="url" value="${htmlEncode(agent, { mode: 'attribute' })}" />
+        <p data-i18n="editor.toolbar.agent.form.remove.p">${i18n.t('editor.toolbar.agent.form.remove.p.textContent')}</p>
+        <div>
+          <button class="editor-form-submit" data-i18n="editor.toolbar.form.save.button" type="submit">${i18n.t('editor.toolbar.form.save.button.textContent')}</button>
+          <button class="editor-form-cancel" data-i18n="editor.toolbar.form.cancel.button" type="button">${i18n.t('editor.toolbar.form.cancel.button.textContent')}</button>
+        </div>
+      </fieldset>
+    `;
+
+    return html;
+  }
+
+  // The document's entries stay checked; unchecking one removes it on save
+  createDocumentListWidgetHTML(name, urls, { pattern = 'https://.+' } = {}) {
+    const entries = urls.map((url, i) => `
+          <li><input checked="" id="${name}-keep-${i}" name="${name}-keep" type="checkbox" value="${htmlEncode(url, { mode: 'attribute' })}" /> <label dir="ltr" for="${name}-keep-${i}">${htmlEncode(url)}</label></li>`).join('');
+
+    var html = `
+      <fieldset>
+        <legend data-i18n="editor.toolbar.${name}.form.legend">${i18n.t(`editor.toolbar.${name}.form.legend.textContent`)}</legend>
+        ${entries ? `<p data-i18n="editor.toolbar.form.keep-entries.p">${i18n.t('editor.toolbar.form.keep-entries.p.textContent')}</p>
+        <ul>${entries}
+        </ul>` : ''}
+        <label data-i18n="editor.toolbar.${name}.form.add.label" for="set-${name}">${i18n.t(`editor.toolbar.${name}.form.add.label.textContent`)}</label> <input class="editor-form-input" data-i18n="editor.toolbar.form.url.input" dir="ltr" id="set-${name}" name="${name}" pattern="${pattern}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}"${entries ? '' : ' required=""'} type="url" value="" />
         <div>
           <button class="editor-form-submit" data-i18n="editor.toolbar.form.save.button" type="submit">${i18n.t('editor.toolbar.form.save.button.textContent')}</button>
           <button class="editor-form-cancel" data-i18n="editor.toolbar.form.cancel.button" type="button">${i18n.t('editor.toolbar.form.cancel.button.textContent')}</button>
