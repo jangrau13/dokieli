@@ -18,8 +18,11 @@ limitations under the License.
 import { getLanguageOptionsHTML, getLicenseOptionsHTML, getPublicationStatusOptionsHTML, getResourceTypeOptionsHTML } from "../../doc.js";
 import { getButtonHTML } from "../../ui/buttons.js";
 import { Icon } from "../../ui/icons.js";
-import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox, formHandlerAgent, formHandlerDataSource, formHandlerOntology } from "./handlers.js";
-import { getDocumentItemURLs, getEditorSelectionContext, showAgentPanel } from "../../agent.js";
+import { formHandlerLanguage, formHandlerLicense, formHandlerInbox, formHandlerInReplyTo, formHandlerPublicationStatus, formHandlerResourceType, formHandlerTestSuite, formHandlerImg, formHandlerTable, formHandlerQuestion, formHandlerQuestionnaireInbox, formHandlerAgent } from "./handlers.js";
+import { getEditorSelectionContext, showAgentChat } from "../../agent.js";
+import { getItemURLs, removeSlashCommand } from "../utils/documentItems.js";
+import { openDocumentItemSearch } from "../plugins/documentItemsTools.js";
+import { markSlashCommand, slashCommandRange } from "../plugins/slashCommand.js";
 import { showUserIdentityInput } from "../../auth.js";
 import Config from "../../config.js";
 import { htmlEncode } from "../../utils/sanitization.js";
@@ -33,6 +36,13 @@ import { selectArticleNode } from "../../utils/html.js";
 import { toggleTOCForRoot } from "../../ui/templates/sections.js";
 import { documentAnchorsPluginKey } from "../plugins/documentAnchors.js";
 import { questionFormHTML, questionnaireInboxFormHTML, wireQuestionForm } from "../../ui/templates/questionnaire.js";
+
+// Other words a feature is known by, so typing them finds it
+const SLASH_ALIASES = {
+  'agent-run': 'chat',
+  'data-source': 'knowledge graph kg dataset sparql',
+  ontology: 'vocabulary vocab'
+};
 
 export class SlashMenu {
   constructor(editorView) {
@@ -62,8 +72,6 @@ export class SlashMenu {
     this.formHandlerQuestion = formHandlerQuestion.bind(this);
     this.formHandlerQuestionnaireInbox = formHandlerQuestionnaireInbox.bind(this);
     this.formHandlerAgent = formHandlerAgent.bind(this);
-    this.formHandlerDataSource = formHandlerDataSource.bind(this);
-    this.formHandlerOntology = formHandlerOntology.bind(this);
 
     //TODO: Create formValidationHandlers to handle `input` and `invalid` event handlers. Move oninput/oninvalid out of form's inline HTML
     this.formEventListeners = {
@@ -79,8 +87,6 @@ export class SlashMenu {
       question: [ { event: 'submit', callback: this.formHandlerQuestion }, { event: 'click', callback: (e) => this.formClickHandler(e, 'question') } ],
       'questionnaire-inbox': [ { event: 'submit', callback: this.formHandlerQuestionnaireInbox }, { event: 'click', callback: (e) => this.formClickHandler(e, 'questionnaire-inbox') } ],
       agent: [ { event: 'submit', callback: this.formHandlerAgent }, { event: 'click', callback: (e) => this.formClickHandler(e, 'agent') } ],
-      'data-source': [ { event: 'submit', callback: this.formHandlerDataSource }, { event: 'click', callback: (e) => this.formClickHandler(e, 'data-source') } ],
-      ontology: [ { event: 'submit', callback: this.formHandlerOntology }, { event: 'click', callback: (e) => this.formClickHandler(e, 'ontology') } ],
     }
 
     document.getElementById('document-slashmenu')?.remove();
@@ -90,6 +96,7 @@ export class SlashMenu {
 
   showMenu(cursorX, cursorY) {
     this.openedWithSlash = true;
+    markSlashCommand(this.editorView);
     this.createMenuItems();
     this.menuContainer.style.display = "block";
 
@@ -214,7 +221,7 @@ export class SlashMenu {
     this.slashMenuButtons.forEach(({ button, dom }) => {
       const menuItem = this.createMenuItem(button, dom);
       // Both the label and the feature name, so "table" finds it either way.
-      menuItem.dataset.search = `${button} ${menuItem.textContent}`.toLowerCase();
+      menuItem.dataset.search = `${button} ${menuItem.textContent} ${SLASH_ALIASES[button] || ''}`.toLowerCase();
       ul.appendChild(menuItem);
 
       menuItem.addEventListener("click", (e) => {
@@ -258,6 +265,8 @@ export class SlashMenu {
   handlePopups(button) {
     if (button === 'toc') return this.toggleTOC();
     if (button === 'agent-run') return this.openAgentPanel();
+    if (button === 'data-source') return this.openDocumentItemSearch('sources');
+    if (button === 'ontology') return this.openDocumentItemSearch('ontologies');
 
     let popupContent = {
       img: this.createImgWidgetHTML(),
@@ -272,34 +281,55 @@ export class SlashMenu {
       question: questionFormHTML(),
       'questionnaire-inbox': questionnaireInboxFormHTML(),
       agent: this.createAgentWidgetHTML(),
-      'data-source': this.createDocumentListWidgetHTML('data-source', getDocumentItemURLs('document-sources', 'dcterms:source')),
-      // Ontology namespaces are names, many of them http
-      ontology: this.createDocumentListWidgetHTML('ontology', getDocumentItemURLs('document-ontologies', 'dcterms:conformsTo'), { pattern: 'https?://.+' })
     }
 
     const popup = fragmentFromString(`<form class="editor-form editor-form-active">${popupContent[button]}</form>`);
     this.openPopup(popup, button);
   }
 
-  // The conversation with the agent is a panel of its own, made by a signed-in author
-  openAgentPanel() {
-    // Where the author is, read before the "/" goes
-    const context = getEditorSelectionContext(this.editorView);
+  // The chat with the agent opens in place of the slash line, made by a signed-in author
+  openAgentPanel(options = {}) {
+    const view = this.editorView;
+    const slash = this.openedWithSlash ? slashCommandRange(view.state) : null;
 
-    const { state, dispatch } = this.editorView;
-    const from = state.selection.from;
-    if (this.openedWithSlash && from > 0 && state.doc.textBetween(from - 1, from) === '/') {
-      dispatch(state.tr.delete(from - 1, from));
+    // Where the author is, read before the "/" goes: around the slash, else the caret or selection
+    const context = getEditorSelectionContext(view, Config.DocumentURL, slash ? { pos: view.state.doc.resolve(slash.from).before() } : {});
+
+    const tr = view.state.tr;
+    const removed = removeSlashCommand(tr, slash);
+    let pos;
+    if (removed?.lineRemoved) {
+      // The chat takes the line's place
+      pos = removed.pos;
     }
+    else {
+      // After the block the "/" or the caret is in
+      const $pos = removed ? tr.doc.resolve(removed.pos) : tr.selection.$from;
+      pos = $pos.depth >= 1 && $pos.parent.isTextblock ? $pos.after() : $pos.pos;
+    }
+    if (tr.docChanged) view.dispatch(tr);
 
     this.hideMenu();
 
     if (!Config.User.IRI) {
       showUserIdentityInput();
-      return;
+      return null;
     }
 
-    showAgentPanel({ context });
+    return showAgentChat(view, { ...options, pos, context });
+  }
+
+  // Knowledge graphs and ontologies are searched for in their own block, as its "+ Add …" does
+  openDocumentItemSearch(kind) {
+    const view = this.editorView;
+    const slash = this.openedWithSlash ? slashCommandRange(view.state) : null;
+
+    const tr = view.state.tr;
+    removeSlashCommand(tr, slash);
+    if (tr.docChanged) view.dispatch(tr);
+
+    this.hideMenu();
+    openDocumentItemSearch(view, kind);
   }
 
   // The menu item is the toggle; with no sections yet the heading still shows.
@@ -502,35 +532,13 @@ export class SlashMenu {
   }
 
   createAgentWidgetHTML() {
-    const agent = getDocumentItemURLs('document-agent', 'schema:agent')[0] || '';
+    const agent = getItemURLs('agent', this.editorView)[0] || '';
 
     var html = `
       <fieldset>
         <legend data-i18n="editor.toolbar.agent.form.legend">${i18n.t('editor.toolbar.agent.form.legend.textContent')}</legend>
         <label data-i18n="editor.toolbar.agent.form.set-agent.label" for="set-agent">${i18n.t('editor.toolbar.agent.form.set-agent.label.textContent')}</label> <input class="editor-form-input" data-i18n="editor.toolbar.form.url.input" dir="ltr" id="set-agent" name="agent" pattern="https://.+" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" type="url" value="${htmlEncode(agent, { mode: 'attribute' })}" />
         <p data-i18n="editor.toolbar.agent.form.remove.p">${i18n.t('editor.toolbar.agent.form.remove.p.textContent')}</p>
-        <div>
-          <button class="editor-form-submit" data-i18n="editor.toolbar.form.save.button" type="submit">${i18n.t('editor.toolbar.form.save.button.textContent')}</button>
-          <button class="editor-form-cancel" data-i18n="editor.toolbar.form.cancel.button" type="button">${i18n.t('editor.toolbar.form.cancel.button.textContent')}</button>
-        </div>
-      </fieldset>
-    `;
-
-    return html;
-  }
-
-  // The document's entries stay checked; unchecking one removes it on save
-  createDocumentListWidgetHTML(name, urls, { pattern = 'https://.+' } = {}) {
-    const entries = urls.map((url, i) => `
-          <li><input checked="" id="${name}-keep-${i}" name="${name}-keep" type="checkbox" value="${htmlEncode(url, { mode: 'attribute' })}" /> <label dir="ltr" for="${name}-keep-${i}">${htmlEncode(url)}</label></li>`).join('');
-
-    var html = `
-      <fieldset>
-        <legend data-i18n="editor.toolbar.${name}.form.legend">${i18n.t(`editor.toolbar.${name}.form.legend.textContent`)}</legend>
-        ${entries ? `<p data-i18n="editor.toolbar.form.keep-entries.p">${i18n.t('editor.toolbar.form.keep-entries.p.textContent')}</p>
-        <ul>${entries}
-        </ul>` : ''}
-        <label data-i18n="editor.toolbar.${name}.form.add.label" for="set-${name}">${i18n.t(`editor.toolbar.${name}.form.add.label.textContent`)}</label> <input class="editor-form-input" data-i18n="editor.toolbar.form.url.input" dir="ltr" id="set-${name}" name="${name}" pattern="${pattern}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}"${entries ? '' : ' required=""'} type="url" value="" />
         <div>
           <button class="editor-form-submit" data-i18n="editor.toolbar.form.save.button" type="submit">${i18n.t('editor.toolbar.form.save.button.textContent')}</button>
           <button class="editor-form-cancel" data-i18n="editor.toolbar.form.cancel.button" type="button">${i18n.t('editor.toolbar.form.cancel.button.textContent')}</button>

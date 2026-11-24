@@ -32,9 +32,15 @@ import { getHash } from '../../src/util.js';
 import { schema } from '../../src/editor/schema/base.js';
 import Config from '../../src/config.js';
 import { createAgentHTML, createDataSourcesHTML, createOntologiesHTML, getDocument, getGraphData } from '../../src/doc.js';
-import { setDocumentItem } from '../../src/editor/slashmenu/handlers.js';
-import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, getDocumentItemURLs, promptToHTML, sendAgentRequest, conversationRequestURL, discoverConversation, getConversation, conversationItemHTML, showAgentPanel } from '../../src/agent.js';
-import { addItemURL, removeItemURL, getItemURLs, searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL } from '../../src/agent-setup.js';
+import { EditorView } from 'prosemirror-view';
+import { history, undoDepth } from 'prosemirror-history';
+import { setDocumentItem, addItemURL, removeItemURL, getItemURLs } from '../../src/editor/utils/documentItems.js';
+import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, promptToHTML, sendAgentRequest, conversationRequestURL, discoverConversation, getConversation, conversationItemHTML, showAgentChat } from '../../src/agent.js';
+import { searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL, agentSetupPanelHTML } from '../../src/agent-setup.js';
+import { agentChatPlugin, openAgentChatWidget, closeAgentChatWidget } from '../../src/editor/plugins/agentChat.js';
+import { documentItemsToolsPlugin, openDocumentItemSearch } from '../../src/editor/plugins/documentItemsTools.js';
+import { SlashMenu } from '../../src/editor/slashmenu/slashmenu.js';
+import { slashCommandPlugin } from '../../src/editor/plugins/slashCommand.js';
 
 const BASE = 'https://example.org/article';
 const AGENT = 'https://agent.example/';
@@ -136,7 +142,6 @@ describe('document agent, data sources and ontologies blocks', () => {
     mount(blocksHTML());
 
     expect(await getDocumentAgentSetup(BASE)).toEqual({ agent: AGENT, sources: SOURCES, ontologies: ONTOLOGIES });
-    expect(getDocumentItemURLs('document-sources', 'dcterms:source')).toEqual(SOURCES);
   });
 });
 
@@ -165,8 +170,9 @@ describe('setting a block in the editor', () => {
   it('puts a new block after the h1 and in document item order, dropping the slash line', () => {
     const view = viewFor('<h1>Title</h1><p>Intro</p><p>/</p>');
     caretAfter(view, '/');
+    const slashPos = view.state.selection.from - 1;
 
-    setDocumentItem(view, 'document-ontologies', createOntologiesHTML(ONTOLOGIES), { openedWithSlash: true });
+    setDocumentItem(view, 'document-ontologies', createOntologiesHTML(ONTOLOGIES), { slash: { from: slashPos, to: slashPos + 1 } });
     setDocumentItem(view, 'document-agent', createAgentHTML(AGENT));
 
     const out = serialize(view);
@@ -392,25 +398,256 @@ describe('the conversation with the agent', () => {
     expect(container.querySelector('img').hasAttribute('onerror')).toBe(false);
   });
 
-  it('loads nothing before the panel opens, and the conversation when it does', async () => {
+  it('reads a missing conversation as none yet', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 404 }));
+
+    expect(await discoverConversation(AGENT, BASE, { fetch })).toBeNull();
+    expect(await getConversation(CONVERSATION, { fetch })).toEqual([]);
+  });
+});
+
+// jsdom has no layout; ProseMirror asks for rects when it scrolls a change into view
+function stubLayout() {
+  const RangePrototype = document.createRange().constructor.prototype;
+  const rect = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 };
+  RangePrototype.getClientRects = () => [];
+  RangePrototype.getBoundingClientRect = () => rect;
+  document.elementFromPoint = () => null;
+}
+
+// An author-mode editor on the page's article, with the plugins under test
+function mountEditor(html, plugins = [history(), documentItemsToolsPlugin, agentChatPlugin, slashCommandPlugin]) {
+  stubLayout();
+  document.body.setAttribute('about', '');
+  document.body.setAttribute('prefix', PREFIX);
+  document.body.innerHTML = '<main><article></article></main>';
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  const state = EditorState.create({ doc: PMDOMParser.fromSchema(schema).parse(container), plugins });
+  return new EditorView(document.querySelector('article'), { state });
+}
+
+// The caret right after the "/" of a paragraph holding only "/", as typing a slash command leaves it
+function caretOnSlashLine(view) {
+  let pos = null;
+  view.state.doc.descendants((node, p) => {
+    if (pos == null && node.type.name === 'p' && node.textContent === '/') pos = p + 2;
+  });
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)));
+}
+
+// What the editor should hold once a slash command is done: the same document without its slash line
+function docWithout(html, removed) {
+  const container = document.createElement('div');
+  container.innerHTML = html.replace(removed, '');
+  return PMDOMParser.fromSchema(schema).parse(container);
+}
+
+// Opens the slash menu as typing "/" does
+function openSlashMenu(view) {
+  const slashMenu = new SlashMenu(view);
+  slashMenu.showMenu(0, 0);
+  return slashMenu;
+}
+
+function savedDocument() {
+  return getDocument(document.documentElement, { ...Config.DOMProcessing, format: true, sanitize: true, normalize: true });
+}
+
+describe('the inline agent chat', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
     Config.DocumentURL = BASE;
-    Config.Editor = { mode: 'author' };
+    Config.User.IRI = ME;
     requestOriginConsent.mockResolvedValue(true);
-    mount(createAgentHTML(AGENT));
+  });
+
+  it('opens from /agent where the slash line was, and loads the conversation only then', async () => {
+    const html = `<h1>Title</h1>${createAgentHTML(AGENT)}<p>Before</p><p>/</p><p>After</p>`;
+    const view = mountEditor(html);
+    Config.Editor = { mode: 'author', editorView: view };
+    caretOnSlashLine(view);
 
     const fetch = vi.fn(async (url) => url === CONVERSATION
       ? jsonResponse(collection)
       : new Response('', { status: 200, headers: { 'Link': `<${CONVERSATION}>; rel="https://www.w3.org/ns/activitystreams#replies"` } }));
-
     expect(fetch).not.toHaveBeenCalled();
-    expect(document.getElementById('agent-panel')).toBeNull();
 
-    const panel = await showAgentPanel({ fetch });
+    const slashMenu = openSlashMenu(view);
+    // The caret has moved since the menu opened; the "/" removed is still the one typed
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 2)));
+    const chat = await slashMenu.openAgentPanel({ fetch });
+
+    expect(chat.id).toBe('agent-chat');
+    expect(chat.classList.contains('do')).toBe(true);
+    expect(chat.getAttribute('contenteditable')).toBe('false');
+    expect(chat.previousElementSibling.textContent).toBe('Before');
+    expect(chat.nextElementSibling.textContent).toBe('After');
+    expect(view.state.doc.eq(docWithout(html, '<p>/</p>'))).toBe(true);
+    expect(view.state.doc.textContent).toContain(AGENT);
 
     expect(fetch.mock.calls.map(call => call[0])).toEqual([conversationRequestURL(AGENT, BASE), CONVERSATION]);
-    expect(panel.querySelectorAll('.agent-conversation li')).toHaveLength(2);
-    expect(panel.querySelector('textarea[name="agent-run-content"]')).not.toBeNull();
-    expect(panel.classList.contains('do')).toBe(true);
+    expect(chat.querySelectorAll('.agent-conversation li')).toHaveLength(2);
+    expect(chat.querySelector('textarea[name="agent-run-content"]')).not.toBeNull();
+  });
+
+  it('keeps typing and clicks in the chat out of the document', async () => {
+    const view = mountEditor(`<h1>Title</h1>${createAgentHTML(AGENT)}<p>Text</p>`);
+    Config.Editor = { mode: 'author', editorView: view };
+
+    const chat = await showAgentChat(view, { pos: view.state.doc.content.size, fetch: vi.fn().mockResolvedValue(new Response('', { status: 404 })) });
+    const before = view.state.doc;
+    const textarea = chat.querySelector('textarea');
+
+    ['a', 'b', 'Enter', 'Backspace'].forEach((key) => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keypress', { key, bubbles: true }));
+    });
+    textarea.value = 'Add a summary';
+    textarea.dispatchEvent(new InputEvent('input', { data: 'Add a summary', inputType: 'insertText', bubbles: true }));
+    chat.querySelector('button.agent-check-updates').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(view.state.doc.eq(before)).toBe(true);
+    expect(textarea.value).toBe('Add a summary');
+    expect(chat.getAttribute('contenteditable')).toBe('false');
+  });
+
+  it('is never part of the document: not serialised, not saved, not in the undo history', () => {
+    const view = mountEditor('<h1>Title</h1><p>Before</p><p>After</p>');
+    const depth = undoDepth(view.state);
+    const chat = document.createElement('div');
+    chat.className = 'do agent-chat';
+    chat.id = 'agent-chat';
+
+    openAgentChatWidget(view, 1 + view.state.doc.child(0).nodeSize, chat);
+
+    expect(document.getElementById('agent-chat')).not.toBeNull();
+    expect(undoDepth(view.state)).toBe(depth);
+
+    const serialised = document.createElement('div');
+    serialised.appendChild(DOMSerializer.fromSchema(schema).serializeFragment(view.state.doc.content));
+    expect(serialised.querySelector('#agent-chat')).toBeNull();
+    expect(savedDocument()).not.toContain('agent-chat');
+
+    closeAgentChatWidget(view);
+    expect(document.getElementById('agent-chat')).toBeNull();
+    expect(undoDepth(view.state)).toBe(depth);
+  });
+
+  it('closes with Escape', async () => {
+    const view = mountEditor(`<h1>Title</h1>${createAgentHTML(AGENT)}<p>Text</p>`);
+    Config.Editor = { mode: 'author', editorView: view };
+
+    const chat = await showAgentChat(view, { pos: view.state.doc.content.size, fetch: vi.fn().mockResolvedValue(new Response('', { status: 404 })) });
+    expect(chat.querySelector('.agent-conversation-empty')).not.toBeNull();
+
+    chat.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(document.getElementById('agent-chat')).toBeNull();
+  });
+});
+
+describe('inline knowledge graphs and ontologies in the document details', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Config.DocumentURL = BASE;
+    requestOriginConsent.mockResolvedValue(true);
+  });
+
+  it('shows every block while editing, empty ones as unsaved placeholders', () => {
+    const view = mountEditor(`<h1>Title</h1>${createDataSourcesHTML([SOURCES[0]])}<p>Text</p>`);
+
+    expect(document.querySelector('.document-item-placeholder[data-item="agent"] button.document-item-add')).not.toBeNull();
+    expect(document.querySelector('.document-item-placeholder[data-item="ontologies"] button.document-item-add')).not.toBeNull();
+    expect(document.querySelectorAll('#document-sources button.document-item-remove')).toHaveLength(1);
+    expect(document.querySelector('#document-sources button.document-item-add')).not.toBeNull();
+
+    const saved = savedDocument();
+    expect(saved).not.toContain('document-item-placeholder');
+    expect(saved).not.toContain('document-ontologies');
+    expect(saved).toContain('document-sources');
+    expect(view.state.doc.textContent).not.toContain('Add');
+  });
+
+  it('adds from "+ Add", by a pasted http address, and removes with "−"', () => {
+    const LOCAL = 'http://127.0.0.1:7001/';
+    const view = mountEditor('<h1>Title</h1><p>Text</p>');
+
+    document.querySelector('.document-item-placeholder[data-item="sources"] button.document-item-add').click();
+    const input = document.querySelector('.document-item-search input');
+    input.value = LOCAL;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    expect(getItemURLs('sources', view)).toEqual([LOCAL]);
+    expect(document.querySelector('.document-item-search')).toBeNull();
+    expect(savedDocument()).toContain(LOCAL);
+
+    document.querySelector('#document-sources button.document-item-remove').click();
+    expect(getItemURLs('sources', view)).toEqual([]);
+    expect(savedDocument()).not.toContain('document-sources');
+  });
+
+  it('opens the search from /ontology and /knowledge graph, removing only the slash line', () => {
+    ['ontology', 'data-source'].forEach((button) => {
+      const html = `<h1>Title</h1>${createAgentHTML(AGENT)}<p>Before</p><p>/</p><p>After</p>`;
+      const view = mountEditor(html);
+      caretOnSlashLine(view);
+
+      openSlashMenu(view).handlePopups(button);
+
+      expect(view.state.doc.eq(docWithout(html, '<p>/</p>'))).toBe(true);
+      const kind = button === 'ontology' ? 'ontologies' : 'sources';
+      expect(document.querySelector(`.document-item-placeholder[data-item="${kind}"] .document-item-search`)).not.toBeNull();
+    });
+  });
+
+  it('adds an ontology found on Linked Open Vocabularies', async () => {
+    const view = mountEditor('<h1>Title</h1><p>Text</p>');
+
+    openDocumentItemSearch(view, 'ontologies');
+    const search = document.querySelector('.document-item-placeholder[data-item="ontologies"] .document-item-search');
+    expect(search).not.toBeNull();
+
+    // The result list is what the LOV search renders
+    search.querySelector('.document-item-results').innerHTML = `<li><button class="agent-setup-add" data-kind="ontologies" data-url="http://www.w3.org/ns/prov#" type="button">Add</button></li>`;
+    search.querySelector('button.agent-setup-add').click();
+
+    expect(getItemURLs('ontologies', view)).toEqual(['http://www.w3.org/ns/prov#']);
+  });
+
+  it('shows entries a remote change brings, e.g. ones the agent added', () => {
+    const view = mountEditor('<h1>Title</h1><p>Text</p>');
+
+    const remote = document.createElement('div');
+    remote.innerHTML = `<h1>Title</h1>${createOntologiesHTML(ONTOLOGIES)}<p>Text</p>`;
+    const doc = PMDOMParser.fromSchema(schema).parse(remote);
+    view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content));
+
+    expect(getItemURLs('ontologies', view)).toEqual(ONTOLOGIES);
+    expect(document.querySelectorAll('#document-ontologies button.document-item-remove')).toHaveLength(1);
+    expect(document.querySelector('.document-item-placeholder[data-item="ontologies"]')).toBeNull();
+  });
+
+  it('drops a block left without entries on save', () => {
+    mount('<dl id="document-sources"><dt>Knowledge graphs</dt><dd>edited away</dd></dl>');
+    expect(savedDocument()).not.toContain('document-sources');
+  });
+
+  it('is found by what the user types in the slash menu', () => {
+    const view = mountEditor('<h1>Title</h1><p>Text</p>');
+    const slashMenu = new SlashMenu(view);
+    slashMenu.createMenuItems();
+
+    const found = (query) => {
+      slashMenu.filterMenuItems(query);
+      return slashMenu.visibleMenuButtons().map(b => b.id);
+    };
+
+    expect(found('knowledge graph')).toContain('editor-button-data-source');
+    expect(found('kg')).toContain('editor-button-data-source');
+    expect(found('ontology')).toContain('editor-button-ontology');
+    expect(found('vocabulary')).toContain('editor-button-ontology');
+    expect(found('agent')[0]).toBe('editor-button-agent-run');
   });
 });
 
@@ -450,6 +687,23 @@ describe('agent setup', () => {
     removeItemURL('ontologies', ONTOLOGIES[0], view);
     expect(serialize(view).querySelector('#document-ontologies')).toBeNull();
     expect(addItemURL('ontologies', 'not a url', view)).toBe(false);
+  });
+
+  it('takes local http knowledge graphs, which only the agent reads, and keeps the agent on https', () => {
+    const LOCAL = 'http://127.0.0.1:7001/';
+    const view = viewFor('<h1>Title</h1><p>Text</p>');
+
+    expect(addItemURL('sources', LOCAL, view)).toBe(true);
+    expect(addItemURL('sources', 'http://127.0.0.1:7880/query', view)).toBe(true);
+    expect(getItemURLs('sources', view)).toEqual([LOCAL, 'http://127.0.0.1:7880/query']);
+    expect(addItemURL('agent', 'http://agent.example/', view)).toBe(false);
+
+    const accepts = (input, value) => new RegExp(`^(?:${input.getAttribute('pattern')})$`).test(value);
+    const panel = document.createElement('div');
+    panel.innerHTML = agentSetupPanelHTML();
+    expect(accepts(panel.querySelector('#agent-setup-sources-url'), LOCAL)).toBe(true);
+    expect(accepts(panel.querySelector('#agent-setup-ontologies-url'), 'http://xmlns.com/foaf/0.1/')).toBe(true);
+    expect(accepts(panel.querySelector('#agent-setup-agent-url'), 'http://agent.example/')).toBe(false);
   });
 
   it('finds ontologies on Linked Open Vocabularies, with consent', async () => {

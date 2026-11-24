@@ -17,7 +17,7 @@ limitations under the License.
 
 // The document's agent: a service named by the document (schema:agent) that takes requests at its inbox and works
 // on the stored document. Its edits arrive as remote changes. The conversation with it is kept by the agent, apart
-// from the document, and shows only in the agent panel, which a signed-in author opens while editing.
+// from the document, and shows only in the agent chat, which a signed-in author opens inline with /agent while editing.
 
 import rdf from 'rdf-ext';
 import { discoverInbox, parseLinkTarget, postNotification } from '@dokieli/notifications';
@@ -37,6 +37,7 @@ import { getButtonHTML } from './ui/buttons.js';
 import { Icon } from './ui/icons.js';
 import { annotationIgnoreSelector, getAnnotationContainer, getSelectedParentElement } from './editor/utils/annotation.js';
 import { showUserIdentityInput } from './auth.js';
+import { agentChatPosition, closeAgentChatWidget, openAgentChatWidget } from './editor/plugins/agentChat.js';
 
 const documentOptions = () => ({
   ...Config.DOMProcessing,
@@ -44,15 +45,6 @@ const documentOptions = () => ({
   sanitize: true,
   normalize: true
 });
-
-// Entries of a document-level list as the document shows them, e.g. for the forms that edit them
-export function getDocumentItemURLs(id, rel) {
-  const article = selectArticleNode(document) || document.body;
-  return Array.from(article.querySelectorAll(`#${id} [rel~="${rel}"]`))
-    .filter(node => !node.closest('.do'))
-    .map(node => node.getAttribute('href') || node.getAttribute('resource'))
-    .filter(Boolean);
-}
 
 // The agent, data sources and ontologies, read from the document's own RDFa
 export async function getDocumentAgentSetup(documentURL = Config.DocumentURL) {
@@ -99,9 +91,13 @@ export function getAgentSelectionContext(range, documentURL = Config.DocumentURL
 }
 
 // Where the author is in the editor: the selected text, else the element with an id around the caret
-export function getEditorSelectionContext(view, documentURL = Config.DocumentURL) {
+export function getEditorSelectionContext(view, documentURL = Config.DocumentURL, { pos = null } = {}) {
   const article = selectArticleNode(document);
-  const { from, to, empty } = view.state.selection;
+  let { from, to, empty } = view.state.selection;
+  if (pos !== null) {
+    from = to = pos;
+    empty = true;
+  }
 
   if (!empty) {
     const start = view.domAtPos(from);
@@ -293,6 +289,9 @@ export async function discoverConversation(agent, documentURL, { fetch = storage
   const url = conversationRequestURL(agent, documentURL);
   const response = await fetch(url, { method: 'GET', headers: { 'Accept': ACCEPT_ACTIVITY } });
 
+  // Nothing said yet
+  if (response.status === 404) return null;
+
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText || ''}`.trim());
   }
@@ -328,6 +327,7 @@ export function normalizeConversationItem(note) {
 
 async function readJSON(url, fetch) {
   const response = await fetch(url, { method: 'GET', headers: { 'Accept': ACCEPT_ACTIVITY } });
+  if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText || ''}`.trim());
   }
@@ -337,11 +337,13 @@ async function readJSON(url, fetch) {
 // The last turns of an OrderedCollection, oldest first, newest last
 export async function getConversation(url, { fetch = storageFetch, limit = Config.Agent.ConversationLimit } = {}) {
   const collection = await readJSON(url, fetch);
+  // Nothing said yet
+  if (!collection) return [];
 
   let items = asValue(collection, 'orderedItems') ?? asValue(collection, 'items');
   if (!items) {
     let first = asValue(collection, 'first');
-    if (typeof first === 'string') first = await readJSON(new URL(first, url).href, fetch);
+    if (typeof first === 'string') first = await readJSON(new URL(first, url).href, fetch) || {};
     items = asValue(first, 'orderedItems') ?? asValue(first, 'items') ?? [];
   }
 
@@ -402,7 +404,7 @@ function showConversationStatus(panel, key, vars = {}) {
 }
 
 // Reads the conversation again, finding where it is the first time
-export async function refreshConversation(panel = document.getElementById('agent-panel'), { fetch = storageFetch } = {}) {
+export async function refreshConversation(panel = document.getElementById('agent-chat'), { fetch = storageFetch } = {}) {
   const agent = panel?.dataset.agent;
   if (!agent) return;
 
@@ -431,19 +433,15 @@ function appendConversationItem(panel, item) {
   list.lastElementChild?.scrollIntoView?.({ block: 'nearest' });
 }
 
-export function agentPanelHTML({ context = null } = {}) {
-  const buttonClose = getButtonHTML({ key: 'dialog.agent.close.button', button: 'close', buttonClass: 'close', iconSize: 'fa-2x' });
+export function agentChatHTML({ context = null } = {}) {
+  const buttonClose = getButtonHTML({ key: 'dialog.agent.close.button', button: 'close', buttonClass: 'agent-chat-close', iconSize: 'fa-2x' });
   const about = context ? contextHTML(context) : '';
 
   return `
-    <aside aria-labelledby="agent-panel-label" class="do on" dir="${Config.User.UI.LanguageDir}" id="agent-panel" lang="${Config.User.UI.Language}" rel="schema:hasPart" resource="#agent-panel" xml:lang="${Config.User.UI.Language}">
-      <h2 data-i18n="dialog.agent.h2" id="agent-panel-label" property="schema:name">${i18n.t('dialog.agent.h2.textContent')}</h2>
+    <div aria-labelledby="agent-chat-label" class="do agent-chat" dir="${Config.User.UI.LanguageDir}" id="agent-chat" lang="${Config.User.UI.Language}" role="region" xml:lang="${Config.User.UI.Language}">
+      <h2 data-i18n="dialog.agent.h2" id="agent-chat-label">${i18n.t('dialog.agent.h2.textContent')}</h2>
       ${buttonClose}
-      <div class="info"></div>
-      <section aria-labelledby="agent-conversation-label">
-        <h3 data-i18n="dialog.agent.conversation.h3" id="agent-conversation-label">${i18n.t('dialog.agent.conversation.h3.textContent')}</h3>
-        <ul aria-live="polite" class="agent-conversation"></ul>
-      </section>
+      <ul aria-live="polite" class="agent-conversation"></ul>
       <form class="editor-form">
         <fieldset>
           <legend data-i18n="editor.toolbar.agent-run.form.legend">${i18n.t('editor.toolbar.agent-run.form.legend.textContent')}</legend>
@@ -456,22 +454,48 @@ export function agentPanelHTML({ context = null } = {}) {
           </div>
         </fieldset>
       </form>
-    </aside>
+    </div>
   `;
 }
 
-// Opened from /agent: the conversation about this document above the prompt. Nothing of it loads before
-export async function showAgentPanel({ context = null, fetch = storageFetch } = {}) {
-  document.getElementById('agent-panel')?.remove();
+// The chat stays with the editor; a context of the last opening is kept for when the editor is rebuilt
+let lastChat = null;
 
+export function closeAgentChat(view = Config.Editor?.editorView) {
+  lastChat = null;
+  if (view) {
+    closeAgentChatWidget(view);
+    view.focus();
+  }
+}
+
+// Opened from /agent: the conversation about this document, in the flow of the document at pos, above the prompt.
+// Nothing of it loads before
+export async function showAgentChat(view, { pos, context = null, fetch = storageFetch } = {}) {
   const agent = await prepareAgent(Config.DocumentURL);
   if (!agent) return null;
 
-  document.body.appendChild(fragmentFromString(agentPanelHTML({ context })));
-  const panel = document.getElementById('agent-panel');
-  panel.dataset.agent = agent;
+  const chat = fragmentFromString(agentChatHTML({ context })).firstElementChild;
+  // Sanitising drops contenteditable; the chat is not part of the editable document
+  chat.setAttribute('contenteditable', 'false');
+  chat.dataset.agent = agent;
 
-  const form = panel.querySelector('form');
+  chat.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeAgentChat(view);
+    }
+  });
+
+  chat.addEventListener('click', (e) => {
+    if (e.target.closest('button.agent-chat-close')) {
+      e.preventDefault();
+      closeAgentChat(view);
+    }
+  });
+
+  const form = chat.querySelector('form');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const textarea = form.querySelector('textarea');
@@ -488,7 +512,7 @@ export async function showAgentPanel({ context = null, fetch = storageFetch } = 
 
     // The author's turn shows at once; the agent's reply comes with the next refresh
     textarea.value = '';
-    appendConversationItem(panel, {
+    appendConversationItem(chat, {
       actor: result.request.actor,
       content: result.request.object.content,
       published: result.request.published,
@@ -496,10 +520,14 @@ export async function showAgentPanel({ context = null, fetch = storageFetch } = 
     });
   });
 
-  form.querySelector('textarea').focus();
+  // A second /agent moves the chat
+  openAgentChatWidget(view, pos, chat);
+  lastChat = { context };
 
-  await refreshConversation(panel, { fetch });
-  return panel;
+  chat.querySelector('textarea').focus();
+
+  await refreshConversation(chat, { fetch });
+  return chat;
 }
 
 // The agent's edits come in the way any remote change does; its replies into the open panel
@@ -514,7 +542,17 @@ export async function checkAgentUpdates() {
     return;
   }
 
-  await refreshConversation();
+  // A remote change rebuilds the editor, and the chat with it
+  const view = Config.Editor?.editorView;
+  if (lastChat && view && !document.getElementById('agent-chat')) {
+    // After the block the caret is in, as /agent places it
+    const $pos = view.state.selection.$from;
+    const pos = agentChatPosition(view.state) ?? ($pos.depth >= 1 && $pos.parent.isTextblock ? $pos.after() : $pos.pos);
+    await showAgentChat(view, { pos, context: lastChat.context });
+  }
+  else {
+    await refreshConversation();
+  }
 
   agentMessage('agent.message.checked', { type: 'success', clearId: progressId });
 }

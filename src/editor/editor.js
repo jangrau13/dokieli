@@ -66,6 +66,9 @@ import { protectPlaceholdersPlugin } from "./plugins/protectPlaceholders.js";
 import { mentionsPlugin } from "./plugins/mentions.js";
 import { fragmentLinksPlugin } from "./plugins/fragmentLinks.js";
 import { tableToolsPlugin } from "./plugins/tableTools.js";
+import { agentChatPlugin } from "./plugins/agentChat.js";
+import { documentItemsToolsPlugin } from "./plugins/documentItemsTools.js";
+import { slashCommandPlugin } from "./plugins/slashCommand.js";
 
 const ns = Config.ns;
 
@@ -451,7 +454,7 @@ export class Editor {
     // not a collaborative session): skip Yjs/IndexedDB/remote-sync entirely.
     Config.Editor['collab'] = false;
     pmDoc = originalDoc;
-    editorPlugins = [history(), mentionsPlugin, fragmentLinksPlugin, keymapPlugin, placeholderPlugin, documentStructurePlugin, slideshowDecorationsPlugin, cvNavDecorationPlugin, specificationNavDecorationPlugin, specificationConceptSyncPlugin, documentTypeToolsPlugin, questionnaireToolsPlugin, autoIdPlugin, documentAnchorsPlugin, protectPlaceholdersPlugin, tableToolsPlugin(), editorToolbarPlugin];
+    editorPlugins = [history(), mentionsPlugin, fragmentLinksPlugin, keymapPlugin, placeholderPlugin, documentStructurePlugin, slideshowDecorationsPlugin, cvNavDecorationPlugin, specificationNavDecorationPlugin, specificationConceptSyncPlugin, documentTypeToolsPlugin, questionnaireToolsPlugin, autoIdPlugin, documentAnchorsPlugin, protectPlaceholdersPlugin, tableToolsPlugin(), documentItemsToolsPlugin, agentChatPlugin, slashCommandPlugin, editorToolbarPlugin];
   } else {
     Config.Editor['collab'] = true;
     ydoc = new Y.Doc();
@@ -672,6 +675,9 @@ export class Editor {
       documentAnchorsPlugin,
       protectPlaceholdersPlugin,
       tableToolsPlugin(),
+      documentItemsToolsPlugin,
+      agentChatPlugin,
+      slashCommandPlugin,
       editorToolbarPlugin,
     ];
   }

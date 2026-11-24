@@ -15,12 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { createLanguageHTML, createLicenseHTML, createInboxHTML, createInReplyToHTML, createPublicationStatusHTML, createResourceTypeHTML, createTestSuiteHTML, createAgentHTML, createDataSourcesHTML, createOntologiesHTML } from "../../doc.js";
+import { createLanguageHTML, createLicenseHTML, createInboxHTML, createInReplyToHTML, createPublicationStatusHTML, createResourceTypeHTML, createTestSuiteHTML } from "../../doc.js";
 import { fragmentFromString } from "../../utils/html.js";
 import { getFormValues } from "../../utils/html.js";
 import { schema } from "../schema/base.js";
 import { TextSelection } from "prosemirror-state";
-import { DOMParser as PMDOMParser } from "prosemirror-model";
 import Config from "../../config.js";
 import { isUploadableTarget, uploadImageFile } from "../utils/imageAssets.js";
 import { insertTable } from "../commands/table.js";
@@ -29,6 +28,8 @@ import { csvStringToJson } from "../../csv.js";
 import { fromCSVWTableSchema, getPrefixesUsed, ensureDocumentPrefixes } from "../../table.js";
 import { defaultThreatCaption } from "../../threatModel.js";
 import { questionHTML, questionFromFormValues, insertQuestion, setQuestionnaireInbox } from "../../ui/templates/questionnaire.js";
+import { addItemURL, getItemURLs, removeItemURL } from "../utils/documentItems.js";
+import { slashCommandRange } from "../plugins/slashCommand.js";
 
 export function formHandlerLanguage(e) {
   e.preventDefault();
@@ -166,151 +167,21 @@ export function formHandlerQuestionnaireInbox(e) {
   this.editorView.focus();
 }
 
-function findDocumentItem(doc, id) {
-  let found = null;
-  doc.descendants((node, pos) => {
-    if (found) return false;
-    if (node.attrs?.originalAttributes?.id === id) {
-      found = { node, pos };
-      return false;
-    }
-  });
-  return found;
-}
-
-// The addresses a document-level dl links with rel, as the editor holds them
-export function getDocumentItemEntries(doc, id, rel) {
-  const item = findDocumentItem(doc, id);
-  if (!item) return [];
-
-  const urls = [];
-  item.node.descendants((node) => {
-    node.marks?.forEach((mark) => {
-      const { rel: rels, href } = mark.attrs.originalAttributes || {};
-      if (href && String(rels || '').split(/\s+/).includes(rel) && !urls.includes(href)) urls.push(href);
-    });
-  });
-  return urls;
-}
-
-// After the nearest earlier item in Config.DocumentItems, else after the h1, as insertDocumentLevelHTML places them
-function documentItemPosition(doc, id) {
-  for (let i = Config.DocumentItems.indexOf(id) - 1; i >= 0; i--) {
-    const previous = findDocumentItem(doc, Config.DocumentItems[i]);
-    if (previous) return previous.pos + previous.node.nodeSize;
-  }
-
-  // Before a later item, so the block joins the other document details wherever they are, e.g. in a details element
-  for (let i = Config.DocumentItems.indexOf(id) + 1; i < Config.DocumentItems.length; i++) {
-    const next = findDocumentItem(doc, Config.DocumentItems[i]);
-    if (next && next.node.type.name === 'dl') return next.pos;
-  }
-
-  let heading = null;
-  doc.descendants((node, pos) => {
-    if (heading) return false;
-    if (node.type.name === 'heading' && node.attrs.level === 1) {
-      heading = { node, pos };
-      return false;
-    }
-  });
-
-  return heading ? heading.pos + heading.node.nodeSize : 0;
-}
-
-// Writes a document-level dl (e.g. #document-agent) in place of the one there, or removes it when html is empty
-export function setDocumentItem(view, id, html, { openedWithSlash = false } = {}) {
-  const { schema } = view.state;
-  const tr = view.state.tr;
-
-  // The "/" and the line it leaves behind, when nothing else is on it
-  if (openedWithSlash) {
-    const from = tr.selection.from;
-    if (from > 0 && tr.doc.textBetween(from - 1, from) === '/') {
-      tr.delete(from - 1, from);
-    }
-  }
-  const { $from } = tr.selection;
-  const line = $from.parent;
-  const emptyLine = (openedWithSlash && line.isTextblock && !line.content.size && $from.depth >= 1 && $from.node(-1).childCount > 1)
-    ? { from: $from.before(), to: $from.after() }
-    : null;
-
-  const nodes = html ? PMDOMParser.fromSchema(schema).parseSlice(fragmentFromString(html)).content : null;
-  const existing = findDocumentItem(tr.doc, id);
-
-  if (existing) {
-    if (nodes) {
-      tr.replaceWith(existing.pos, existing.pos + existing.node.nodeSize, nodes);
-    }
-    else {
-      tr.delete(existing.pos, existing.pos + existing.node.nodeSize);
-    }
-  }
-  else if (nodes) {
-    tr.insert(documentItemPosition(tr.doc, id), nodes);
-  }
-
-  if (emptyLine) {
-    tr.delete(tr.mapping.map(emptyLine.from), tr.mapping.map(emptyLine.to));
-  }
-
-  view.dispatch(tr.scrollIntoView());
-}
-
-// Absolute, so the address holds wherever the document is stored or copied
-function absoluteURL(value) {
-  try {
-    return new URL(String(value || '').trim()).href;
-  }
-  catch {
-    return '';
-  }
-}
-
 export function formHandlerAgent(e) {
   e.preventDefault();
   e.stopPropagation();
 
-  const agent = absoluteURL(new FormData(e.target).get('agent'));
+  const value = String(new FormData(e.target).get('agent') || '').trim();
+
+  const slash = this.openedWithSlash ? slashCommandRange(this.editorView.state) : null;
 
   // An empty address takes the agent off the document
-  setDocumentItem(this.editorView, 'document-agent', createAgentHTML(agent), { openedWithSlash: this.openedWithSlash });
-  if (agent) ensureDocumentPrefixes(['schema']);
-
-  this.hideMenu();
-  this.editorView.focus();
-}
-
-// The checked entries stay, the new address is added
-function listedURLs(form, name) {
-  const formData = new FormData(form);
-  const kept = formData.getAll(`${name}-keep`).map(absoluteURL).filter(Boolean);
-  const added = absoluteURL(formData.get(name));
-  return added ? [...kept, added] : kept;
-}
-
-export function formHandlerDataSource(e) {
-  e.preventDefault();
-  e.stopPropagation();
-
-  const urls = listedURLs(e.target, 'data-source');
-
-  setDocumentItem(this.editorView, 'document-sources', createDataSourcesHTML(urls), { openedWithSlash: this.openedWithSlash });
-  if (urls.length) ensureDocumentPrefixes(['dcterms']);
-
-  this.hideMenu();
-  this.editorView.focus();
-}
-
-export function formHandlerOntology(e) {
-  e.preventDefault();
-  e.stopPropagation();
-
-  const urls = listedURLs(e.target, 'ontology');
-
-  setDocumentItem(this.editorView, 'document-ontologies', createOntologiesHTML(urls), { openedWithSlash: this.openedWithSlash });
-  if (urls.length) ensureDocumentPrefixes(['dcterms']);
+  if (value) {
+    addItemURL('agent', value, this.editorView, { slash });
+  }
+  else {
+    removeItemURL('agent', getItemURLs('agent', this.editorView)[0], this.editorView, { slash });
+  }
 
   this.hideMenu();
   this.editorView.focus();

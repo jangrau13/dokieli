@@ -21,51 +21,18 @@ limitations under the License.
 
 import Config from './config.js';
 import { i18n } from './i18n.js';
-import { createAgentHTML, createDataSourcesHTML, createOntologiesHTML } from './doc.js';
 import { getResource } from './fetcher.js';
 import { requestOriginConsent } from './consent.js';
 import { storageFetch } from './storage/backend.js';
-import { ensureDocumentPrefixes } from './table.js';
 import { htmlEncode } from './utils/sanitization.js';
 import { fragmentFromString } from './utils/html.js';
 import { getButtonHTML } from './ui/buttons.js';
-import { getDocumentItemEntries, setDocumentItem } from './editor/slashmenu/handlers.js';
-
-export const DOCUMENT_ITEMS = {
-  agent: { id: 'document-agent', rel: 'schema:agent', prefix: 'schema', html: (urls) => createAgentHTML(urls[0]) },
-  sources: { id: 'document-sources', rel: 'dcterms:source', prefix: 'dcterms', html: createDataSourcesHTML },
-  ontologies: { id: 'document-ontologies', rel: 'dcterms:conformsTo', prefix: 'dcterms', html: createOntologiesHTML }
-};
+import { DOCUMENT_ITEMS, addItemURL, getItemURLs, removeItemURL } from './editor/utils/documentItems.js';
 
 export const LOV_AUTOCOMPLETE_URL = 'https://lov.linkeddata.es/dataset/api/v2/vocabulary/autocomplete';
 
 function editorView() {
   return Config.Editor?.editorView;
-}
-
-export function getItemURLs(kind, view = editorView()) {
-  const { id, rel } = DOCUMENT_ITEMS[kind];
-  return view ? getDocumentItemEntries(view.state.doc, id, rel) : [];
-}
-
-function writeItem(kind, urls, view) {
-  const { id, prefix, html } = DOCUMENT_ITEMS[kind];
-  setDocumentItem(view, id, urls.length ? html(urls) : '');
-  if (urls.length) ensureDocumentPrefixes([prefix]);
-}
-
-// Absolute addresses only, so they hold wherever the document is stored or copied
-export function addItemURL(kind, url, view = editorView()) {
-  let href;
-  try { href = new URL(String(url).trim()).href; } catch { return false; }
-
-  const urls = kind === 'agent' ? [href] : [...getItemURLs(kind, view).filter(u => u !== href), href];
-  writeItem(kind, urls, view);
-  return true;
-}
-
-export function removeItemURL(kind, url, view = editorView()) {
-  writeItem(kind, getItemURLs(kind, view).filter(u => u !== url), view);
 }
 
 function first(value) {
@@ -171,7 +138,7 @@ function sectionHTML(kind, { search = '' } = {}) {
         ${search}
         <form class="agent-setup-url">
           <label data-i18n="dialog.agent-setup.${kind}.url.label" for="agent-setup-${kind}-url">${i18n.t(`dialog.agent-setup.${kind}.url.label.textContent`)}</label>
-          <input dir="ltr" id="agent-setup-${kind}-url" name="url" pattern="${kind === 'ontologies' ? 'https?://.+' : 'https://.+'}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" required="" type="url" value="" />
+          <input dir="ltr" id="agent-setup-${kind}-url" name="url" pattern="${kind === 'agent' ? 'https://.+' : 'https?://.+'}" placeholder="${i18n.t('editor.toolbar.form.url.input.placeholder')}" required="" type="url" value="" />
           <button data-i18n="dialog.agent-setup.add.button" type="submit">${i18n.t('dialog.agent-setup.add.button.textContent')}</button>
         </form>
       </section>`;
@@ -202,7 +169,7 @@ export function agentSetupPanelHTML() {
 
 function renderEntries(panel) {
   Object.keys(DOCUMENT_ITEMS).forEach((kind) => {
-    panel.querySelector(`section[data-kind="${kind}"] .agent-setup-entries`).replaceChildren(fragmentFromString(entriesHTML(kind, getItemURLs(kind))));
+    panel.querySelector(`section[data-kind="${kind}"] .agent-setup-entries`).replaceChildren(fragmentFromString(entriesHTML(kind, getItemURLs(kind, editorView()))));
   });
 }
 
@@ -210,27 +177,30 @@ function showResults(list, html) {
   list.replaceChildren(fragmentFromString(html));
 }
 
-async function search(kind, query, list) {
-  showResults(list, `<li data-i18n="dialog.agent-setup.searching.li">${i18n.t('dialog.agent-setup.searching.li.textContent')}</li>`);
-
+// Search results to add from, as list items: LOV for ontologies, the agent's catalog for knowledge graphs
+export async function documentItemResultsHTML(kind, query, view = editorView()) {
   try {
     let html;
     if (kind === 'ontologies') {
       html = (await searchOntologies(query)).map(ontologyResultHTML).join('');
     }
     else {
-      const agent = getItemURLs('agent')[0];
+      const agent = getItemURLs('agent', view)[0];
       if (!agent) {
-        showResults(list, `<li data-i18n="dialog.agent-setup.sources.no-agent.li">${i18n.t('dialog.agent-setup.sources.no-agent.li.textContent')}</li>`);
-        return;
+        return `<li data-i18n="dialog.agent-setup.sources.no-agent.li">${i18n.t('dialog.agent-setup.sources.no-agent.li.textContent')}</li>`;
       }
       html = (await searchKnowledgeGraphs(agent, query)).map(knowledgeGraphResultHTML).join('');
     }
-    showResults(list, html || `<li data-i18n="dialog.agent-setup.no-results.li">${i18n.t('dialog.agent-setup.no-results.li.textContent')}</li>`);
+    return html || `<li data-i18n="dialog.agent-setup.no-results.li">${i18n.t('dialog.agent-setup.no-results.li.textContent')}</li>`;
   }
   catch (error) {
-    showResults(list, `<li data-i18n="dialog.agent-setup.search-failed.li">${i18n.t('dialog.agent-setup.search-failed.li.textContent', { error: error?.message || '' })}</li>`);
+    return `<li data-i18n="dialog.agent-setup.search-failed.li">${i18n.t('dialog.agent-setup.search-failed.li.textContent', { error: error?.message || '' })}</li>`;
   }
+}
+
+async function search(kind, query, list) {
+  showResults(list, `<li data-i18n="dialog.agent-setup.searching.li">${i18n.t('dialog.agent-setup.searching.li.textContent')}</li>`);
+  showResults(list, await documentItemResultsHTML(kind, query));
 }
 
 // From the Document menu while editing
@@ -254,7 +224,7 @@ export function showAgentSetup() {
       return;
     }
 
-    if (addItemURL(kind, form.querySelector('[name="url"]').value)) {
+    if (addItemURL(kind, form.querySelector('[name="url"]').value, editorView())) {
       form.reset();
       renderEntries(panel);
     }
@@ -264,12 +234,12 @@ export function showAgentSetup() {
     const add = e.target.closest('button.agent-setup-add');
     const remove = e.target.closest('button.agent-setup-remove');
     if (add) {
-      addItemURL(add.dataset.kind, add.dataset.url);
+      addItemURL(add.dataset.kind, add.dataset.url, editorView());
       add.disabled = true;
       renderEntries(panel);
     }
     else if (remove) {
-      removeItemURL(remove.dataset.kind, remove.dataset.url);
+      removeItemURL(remove.dataset.kind, remove.dataset.url, editorView());
       renderEntries(panel);
     }
   });
