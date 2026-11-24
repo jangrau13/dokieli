@@ -1675,5 +1675,7 @@
   "editor.document-items.ontologies.search.input.aria-label": "Search Linked Open Vocabularies, or paste an ontology address",
   "editor.document-items.ontologies.search.input.placeholder": "Search, or paste an address",
   "editor.document-items.search.button.textContent": "Search",
-  "editor.document-items.set.button.textContent": "Set"
+  "editor.document-items.set.button.textContent": "Set",
+  "dialog.agent-setup.ontologies.from-agent.textContent": "From the agent",
+  "dialog.agent-setup.ontologies.from-lov.textContent": "From Linked Open Vocabularies"
 }

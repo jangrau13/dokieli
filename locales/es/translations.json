@@ -1585,5 +1585,7 @@
   "editor.document-items.ontologies.search.input.aria-label": "Buscar en Linked Open Vocabularies, o pegar la dirección de una ontología",
   "editor.document-items.ontologies.search.input.placeholder": "Busca, o pega una dirección",
   "editor.document-items.search.button.textContent": "Buscar",
-  "editor.document-items.set.button.textContent": "Establecer"
+  "editor.document-items.set.button.textContent": "Establecer",
+  "dialog.agent-setup.ontologies.from-agent.textContent": "Del agente",
+  "dialog.agent-setup.ontologies.from-lov.textContent": "De Linked Open Vocabularies"
 }

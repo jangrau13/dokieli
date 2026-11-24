@@ -79,12 +79,12 @@ function datasetsOf(json) {
   return [];
 }
 
-// The agent's catalog address for a search: <agent>/knowledge-graphs?q=
-export function catalogSearchURL(agent, query) {
+// The agent's catalog address for a search: <agent>/knowledge-graphs?q= or <agent>/ontologies?q=
+export function catalogSearchURL(agent, query, catalog = 'knowledge-graphs') {
   const url = new URL(agent);
   url.hash = '';
   url.search = '';
-  url.pathname = url.pathname.replace(/\/$/, '') + '/knowledge-graphs';
+  url.pathname = url.pathname.replace(/\/$/, '') + '/' + catalog;
   url.searchParams.set('q', query);
   return url.href;
 }
@@ -110,6 +110,27 @@ export async function searchKnowledgeGraphs(agent, query, { fetch = storageFetch
   })).filter(d => d.url);
 }
 
+// Ontologies the agent hosts or knows: title, prefix, the ontology document (url) and its namespace
+export async function searchAgentOntologies(agent, query, { fetch = storageFetch } = {}) {
+  const q = String(query || '').trim();
+  if (!agent || !q) return [];
+
+  if (!(await requestOriginConsent(agent, { reason: 'agent', ask: true }))) return [];
+
+  const url = catalogSearchURL(agent, q, 'ontologies');
+  const response = await fetch(url, { method: 'GET', headers: { 'Accept': 'application/ld+json, application/json;q=0.9' } });
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText || ''}`.trim());
+  }
+
+  return datasetsOf(await response.json()).map((o) => ({
+    uri: iriOf(o.url ?? o['schema:url'] ?? o.id ?? o['@id']),
+    prefix: textOf(o.prefix ?? o['vann:preferredNamespacePrefix']),
+    title: textOf(o.title ?? o['dcterms:title'] ?? o.name),
+    namespace: iriOf(o.namespace ?? o['vann:preferredNamespaceUri'])
+  })).filter(o => o.uri);
+}
+
 function entriesHTML(kind, urls) {
   if (!urls.length) {
     return `<li data-i18n="dialog.agent-setup.none.li">${i18n.t('dialog.agent-setup.none.li.textContent')}</li>`;
@@ -123,7 +144,32 @@ function addButtonHTML(kind, url) {
 }
 
 export function ontologyResultHTML(r) {
-  return `<li><strong>${htmlEncode(r.prefix)}</strong> ${htmlEncode(r.title)} <code dir="ltr">${htmlEncode(r.uri)}</code> ${addButtonHTML('ontologies', r.uri)}</li>`;
+  const namespace = r.namespace && r.namespace !== r.uri ? ` <code dir="ltr">${htmlEncode(r.namespace)}</code>` : '';
+  return `<li><strong>${htmlEncode(r.prefix)}</strong> ${htmlEncode(r.title)} <code dir="ltr">${htmlEncode(r.uri)}</code>${namespace} ${addButtonHTML('ontologies', r.uri)}</li>`;
+}
+
+function failedHTML(error) {
+  return `<li data-i18n="dialog.agent-setup.search-failed.li">${i18n.t('dialog.agent-setup.search-failed.li.textContent', { error: error?.message || '' })}</li>`;
+}
+
+function resultsGroupHTML(key, items) {
+  return `<li class="document-item-results-group"><strong data-i18n="${key}">${i18n.t(`${key}.textContent`)}</strong><ul>${items || `<li data-i18n="dialog.agent-setup.no-results.li">${i18n.t('dialog.agent-setup.no-results.li.textContent')}</li>`}</ul></li>`;
+}
+
+// The agent's own ontologies first, then Linked Open Vocabularies; LOV alone without an agent
+async function ontologyResultsHTML(query, view, { fetch } = {}) {
+  const agent = getItemURLs('agent', view)[0];
+  const lovResults = () => searchOntologies(query, { fetch }).then(results => results.map(ontologyResultHTML).join(''), failedHTML);
+
+  if (!agent) {
+    return (await lovResults()) || `<li data-i18n="dialog.agent-setup.no-results.li">${i18n.t('dialog.agent-setup.no-results.li.textContent')}</li>`;
+  }
+
+  // One failing source does not hide the other
+  const own = await searchAgentOntologies(agent, query, fetch ? { fetch } : {}).then(results => results.map(ontologyResultHTML).join(''), failedHTML);
+  const lov = await lovResults();
+
+  return resultsGroupHTML('dialog.agent-setup.ontologies.from-agent', own) + resultsGroupHTML('dialog.agent-setup.ontologies.from-lov', lov);
 }
 
 export function knowledgeGraphResultHTML(d) {
@@ -178,23 +224,23 @@ function showResults(list, html) {
 }
 
 // Search results to add from, as list items: LOV for ontologies, the agent's catalog for knowledge graphs
-export async function documentItemResultsHTML(kind, query, view = editorView()) {
+export async function documentItemResultsHTML(kind, query, view = editorView(), { fetch } = {}) {
   try {
     let html;
     if (kind === 'ontologies') {
-      html = (await searchOntologies(query)).map(ontologyResultHTML).join('');
+      return await ontologyResultsHTML(query, view, { fetch });
     }
     else {
       const agent = getItemURLs('agent', view)[0];
       if (!agent) {
         return `<li data-i18n="dialog.agent-setup.sources.no-agent.li">${i18n.t('dialog.agent-setup.sources.no-agent.li.textContent')}</li>`;
       }
-      html = (await searchKnowledgeGraphs(agent, query)).map(knowledgeGraphResultHTML).join('');
+      html = (await searchKnowledgeGraphs(agent, query, fetch ? { fetch } : {})).map(knowledgeGraphResultHTML).join('');
     }
     return html || `<li data-i18n="dialog.agent-setup.no-results.li">${i18n.t('dialog.agent-setup.no-results.li.textContent')}</li>`;
   }
   catch (error) {
-    return `<li data-i18n="dialog.agent-setup.search-failed.li">${i18n.t('dialog.agent-setup.search-failed.li.textContent', { error: error?.message || '' })}</li>`;
+    return failedHTML(error);
   }
 }
 

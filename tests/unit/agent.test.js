@@ -36,7 +36,7 @@ import { EditorView } from 'prosemirror-view';
 import { history, undoDepth } from 'prosemirror-history';
 import { setDocumentItem, addItemURL, removeItemURL, getItemURLs } from '../../src/editor/utils/documentItems.js';
 import { createAgentRequest, getAgentSelectionContext, getEditorSelectionContext, getDocumentAgentSetup, promptToHTML, sendAgentRequest, conversationRequestURL, discoverConversation, getConversation, conversationItemHTML, showAgentChat } from '../../src/agent.js';
-import { searchOntologies, searchKnowledgeGraphs, catalogSearchURL, LOV_AUTOCOMPLETE_URL, agentSetupPanelHTML } from '../../src/agent-setup.js';
+import { searchOntologies, searchKnowledgeGraphs, searchAgentOntologies, documentItemResultsHTML, catalogSearchURL, LOV_AUTOCOMPLETE_URL, agentSetupPanelHTML } from '../../src/agent-setup.js';
 import { agentChatPlugin, openAgentChatWidget, closeAgentChatWidget } from '../../src/editor/plugins/agentChat.js';
 import { documentItemsToolsPlugin, openDocumentItemSearch } from '../../src/editor/plugins/documentItemsTools.js';
 import { SlashMenu } from '../../src/editor/slashmenu/slashmenu.js';
@@ -704,6 +704,67 @@ describe('agent setup', () => {
     expect(accepts(panel.querySelector('#agent-setup-sources-url'), LOCAL)).toBe(true);
     expect(accepts(panel.querySelector('#agent-setup-ontologies-url'), 'http://xmlns.com/foaf/0.1/')).toBe(true);
     expect(accepts(panel.querySelector('#agent-setup-agent-url'), 'http://agent.example/')).toBe(false);
+  });
+
+  describe('ontologies from the agent and from Linked Open Vocabularies', () => {
+    const SDM = 'https://agent.example/ontologies/sdmonto.ttl';
+    const agentCatalog = {
+      '@context': { '@vocab': 'http://schema.org/' },
+      '@graph': [{ 'title': 'System Dynamics Modelling Ontology', 'prefix': 'sdm', 'url': SDM, 'namespace': 'https://w3id.org/sdmonto#' }]
+    };
+    const lov = { results: [{ uri: ['http://www.w3.org/ns/prov#'], prefix: ['prov'], 'http://purl.org/dc/terms/title@en': ['W3C PROVenance Interchange'] }] };
+
+    const fetchFor = () => vi.fn(async (url) => url.startsWith(LOV_AUTOCOMPLETE_URL) ? jsonResponse(lov) : jsonResponse(agentCatalog));
+
+    it('reads the agent catalog', async () => {
+      const fetch = fetchFor();
+
+      expect(await searchAgentOntologies(AGENT, 'sdm', { fetch })).toEqual([{ uri: SDM, prefix: 'sdm', title: 'System Dynamics Modelling Ontology', namespace: 'https://w3id.org/sdmonto#' }]);
+      expect(fetch.mock.calls[0][0]).toBe('https://agent.example/ontologies?q=sdm');
+      expect(requestOriginConsent).toHaveBeenCalledWith(AGENT, { reason: 'agent', ask: true });
+    });
+
+    it('lists the agent\'s first, then LOV\'s, and adds the ontology document', async () => {
+      const view = viewFor(`<h1>Title</h1>${createAgentHTML(AGENT)}<p>Text</p>`);
+      const fetch = fetchFor();
+
+      const list = document.createElement('ul');
+      list.innerHTML = await documentItemResultsHTML('ontologies', 'sdm', view, { fetch });
+
+      expect(fetch.mock.calls.map(call => new URL(call[0]).origin)).toEqual(['https://agent.example', 'https://lov.linkeddata.es']);
+      const groups = list.querySelectorAll(':scope > li.document-item-results-group');
+      expect(Array.from(groups).map(g => g.querySelector('strong').textContent)).toEqual(['From the agent', 'From Linked Open Vocabularies']);
+      expect(groups[0].querySelector('button.agent-setup-add').dataset.url).toBe(SDM);
+      expect(groups[1].querySelector('button.agent-setup-add').dataset.url).toBe('http://www.w3.org/ns/prov#');
+
+      addItemURL('ontologies', groups[0].querySelector('button.agent-setup-add').dataset.url, view);
+      expect(getItemURLs('ontologies', view)).toEqual([SDM]);
+    });
+
+    it('searches LOV alone without an agent', async () => {
+      const view = viewFor('<h1>Title</h1><p>Text</p>');
+      const fetch = fetchFor();
+
+      const list = document.createElement('ul');
+      list.innerHTML = await documentItemResultsHTML('ontologies', 'prov', view, { fetch });
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0][0]).toBe(`${LOV_AUTOCOMPLETE_URL}?q=prov`);
+      expect(list.querySelector('.document-item-results-group')).toBeNull();
+      expect(list.querySelector('button.agent-setup-add').dataset.url).toBe('http://www.w3.org/ns/prov#');
+    });
+
+    it('still shows LOV when the agent catalog fails', async () => {
+      const view = viewFor(`<h1>Title</h1>${createAgentHTML(AGENT)}<p>Text</p>`);
+      const fetch = vi.fn(async (url) => url.startsWith(LOV_AUTOCOMPLETE_URL) ? jsonResponse(lov) : new Response('', { status: 500 }));
+
+      const list = document.createElement('ul');
+      list.innerHTML = await documentItemResultsHTML('ontologies', 'prov', view, { fetch });
+
+      const groups = list.querySelectorAll(':scope > li.document-item-results-group');
+      expect(groups[0].querySelector('button')).toBeNull();
+      expect(groups[1].querySelector('button.agent-setup-add').dataset.url).toBe('http://www.w3.org/ns/prov#');
+    });
   });
 
   it('finds ontologies on Linked Open Vocabularies, with consent', async () => {
